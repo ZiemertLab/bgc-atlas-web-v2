@@ -1,0 +1,103 @@
+# Populator config: the source set the live bgc_atlas_v2 corpus was loaded from.
+# Copy to config.yaml (gitignored) and adjust paths.
+#
+# antismash_version / pipeline_version: what produced each source's runs, stored on
+# antismash_runs. Read them off a region GBK's ##antiSMASH-Data## block, never the
+# index.html footer (converted archives show a metaSMASH version that never ran).
+# metaSMASH 0.1.x was renumbered on release: store "metaSMASH 1.0.3" for every 0.1.x.
+# run_versions overrides them for runs under a directory, where a source mixes cohorts.
+output_dir: /data/bgc-atlas/data-v2/populator-out
+sources:
+  custom:
+    type: custom
+    base_dir: /data/bgc-atlas/data-v2/custom-datasets
+    datasets: [deep-sea-hydrothermal, fram_ras, great-barrier-reef, helgoland-2020, microflora-danica,
+               ocean-surface, ziemert-lab]
+    antismash_version: "8.0.4"
+    pipeline_version: "metaSMASH 1.0.3"
+  metalog:
+    type: metalog
+    base_dirs:
+      - /data/bgc-atlas/data-v2/metalog_antismash_runs
+      - /data/bgc-atlas/data-v2/spire_env_only_antismash_runs
+    env_metadata: /data/bgc-atlas/data-v2/metadata/metalog_env_meta/environmental_extended_wide_latest.tsv
+    env_measurements: /data/bgc-atlas/data-v2/metadata/metalog_env_meta/environmental_all_long_latest.tsv
+    # The metalog runs are converted antiSMASH 8.dev archives; SPIRE env-only ran in metaSMASH.
+    antismash_version: "8.dev"
+    pipeline_version: null
+    run_versions:
+      - dir: /data/bgc-atlas/data-v2/spire_env_only_antismash_runs
+        antismash_version: "8.0.4"
+        pipeline_version: "metaSMASH 1.0.3"
+  # The 173 samples metalog added after the main copy, run in metaSMASH. Its own env tables
+  # and output dir. Three of its studies are MGnify studies already loaded (load `mgnify` first);
+  # Seitz_2016_estuary's rows each carry a different accession, so it is keyed on its code.
+  metalog_added:
+    type: metalog
+    unit_key: metalog_added
+    base_dirs:
+      - /data/bgc-atlas/data-v2/spire_metalog_added_antismash_runs
+    env_metadata: /data/bgc-atlas/data-v2/spire_metalog_added_20261009/metadata/env_metadata_added_full.tsv
+    env_measurements: /data/bgc-atlas/data-v2/spire_metalog_added_20261009/metadata/env_measurements_added.tsv
+    study_overrides:
+      key_by_code: [Seitz_2016_estuary]
+      existing:
+        PRJEB13832_sewage: "mgnify|MGYS00005418"
+        Pehrsson_2016_Peru_ElSalvador: "mgnify|MGYS00005381"
+        Zhou_2022_deepsea_sediment: "mgnify|MGYS00010008"
+    antismash_version: "8.0.4"
+    pipeline_version: "metaSMASH 1.0.3"
+  mgnify:
+    type: mgnify
+    base_dir: /data/bgc-atlas/data-v2/mgnify_antismash_runs/mgnify_runs_tar
+    metadata_dir: /data/bgc-atlas/data-v2/metadata/mgnify_asms
+    antismash_version: "8.dev"
+    pipeline_version: null
+  # Newer MGnify assemblies' antiSMASH runs, attached to the assemblies `mgnify` loads (load it
+  # first). Contigs >= 20 kb were re-run with prodigal-m; shorter records come from the first run.
+  mgnify_new:
+    type: mgnify_antismash
+    base_dir: /data/bgc-atlas/data-v2/mgnify_new_prodigal_m_runs
+    antismash_version: "8.0.4"
+    pipeline_version: "metaSMASH 1.0.3"
+  gtdb:
+    type: gtdb
+    base_dir: /data/bgc-atlas/data-v2/gtdb_gbks
+    # antismash_run.file_path = the real <genome>.tar.gz here (what the web Cluster
+    # Viewer extracts), not the extracted gbk dir under base_dir.
+    runs_tar_dir: /data/bgc-atlas/data-v2/gtdb_genomes_antismash_runs/gtdb_genomes_runs_tar
+    # 1,204 genomes whose original run never happened (empty gbk dir, placeholder tarball)
+    # were re-run in metaSMASH; their tarball here replaces the original run.
+    rerun_tar_dir: /data/bgc-atlas/data-v2/gtdb_genomes_antismash_runs/rerun-20261008/runs_tar
+    antismash_version: "8.dev"
+    pipeline_version: null
+    run_versions:
+      - dir: /data/bgc-atlas/data-v2/gtdb_genomes_antismash_runs/rerun-20261008/runs_tar
+        antismash_version: "8.0.4"
+        pipeline_version: "metaSMASH 1.0.3"
+    metadata: /data/bgc-atlas/data-v2/metadata/gtdb/hq_mimag_genomes.tsv
+    # Slim bac120 sample sidecar (organism/lat-lon/country + ncbi/gtdb fields), built
+    # with scripts.populator.prep.build_gtdb_bac120_sidecar. populate.py reads this key.
+    bac120_sidecar: /data/bgc-atlas/data-v2/metadata/gtdb/bac120_sample_sidecar.tsv
+    # Consolidated Tier 1+2+3 sample enrichment (dump metadata + release geo + NCBI
+    # BioSample env/host/date), rebuilt with tools/build_gtdb_enrichment_sidecar.py.
+    # NOT YET READ: populate.py's _gtdb_units ignores this key, so the GTDB backfills
+    # in tools/ still have to run after a load. See README.md, known gaps.
+    enrichment: /data/bgc-atlas/data-v2/gtdb-release/gtdb_enrichment_sidecar.tsv
+  mag:
+    type: mag
+    base_dir: /data/bgc-atlas/data-v2/mag-collections
+    # owc (2,508) already loaded as pilot. This batch = the 7 remaining collections.
+    # omd-v2 (274k) is the largest; biosample captured for it (see mag.BIOSAMPLE_COLLECTIONS).
+    collections: [gem, mfd-lr, mfd-sr, smag, spire, tpmc, omd-v2]
+    antismash_version: "8.0.4"
+    pipeline_version: "metaSMASH 1.0.3"
+  owc:
+    # owc MAG pilot (already loaded into bgc_atlas_v2). Separate source so its region
+    # sequences extract to a clean owc_regions_gbk.tar without re-running the 7-collection
+    # `mag` batch. Uses the same mag adapter + COLLECTIONS["owc"] entry.
+    type: mag
+    base_dir: /data/bgc-atlas/data-v2/mag-collections
+    collections: [owc]
+    antismash_version: "8.0.4"
+    pipeline_version: "metaSMASH 1.0.3"

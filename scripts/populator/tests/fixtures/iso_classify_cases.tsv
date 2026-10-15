@@ -1,0 +1,235 @@
+# Regression corpus for iso_classify (scripts/populator/adapters/gtdb_ecosystem.py).
+#
+# Every REGRESSION row below is a real ncbi_isolation_source string from the live
+# bgc_atlas_v2 corpus that the v1 rule engine classified into the WRONG GOLD top-level
+# category, found by a multi-category conflict scan (551 distinct strings /
+# 2,366 samples / 17,951 BGCs). The engine is first-match-wins, so these are ORDERING
+# failures: a short, generic token sat above a later, more specific rule.
+#
+# Every ANCHOR row is a string the v1 engine already got right and whose behaviour the
+# reorder must preserve. They are what stops a fix for one rule from silently breaking
+# its neighbours -- several encode deliberate priority decisions (an engineered
+# CONTAINMENT cue like "bioreactor" outranks the source material fed into it; a named
+# aquatic habitat outranks a downstream wastewater mention).
+#
+# Columns: kind <TAB> isolation_source <TAB> expected_gold_path <TAB> why
+# An empty expected_gold_path means iso_classify must return None.
+
+# --- 'stream' matched inside bloodstream / midstream -------------------------------
+regression	bloodstream	Host-associated:Human:Circulatory system	v1: 'stream' -> Freshwater:River
+regression	blood stream	Host-associated:Human:Circulatory system	v1: 'stream' -> Freshwater:River
+regression	primary bloodstream infection	Host-associated:Human:Circulatory system	v1: 'stream' -> Freshwater:River
+regression	midstream urine	Host-associated:Human:Excretory system	v1: 'stream' -> Freshwater:River
+regression	mid-stream urine sample	Host-associated:Human:Excretory system	v1: 'stream' -> Freshwater:River
+
+# --- bare \bwater\b and \bplant outranked the wastewater rule ----------------------
+regression	waste water	Engineered:Wastewater	v1: bare 'water' -> Freshwater
+regression	sewage water	Engineered:Wastewater	v1: bare 'water' -> Freshwater
+regression	waste water treatment plant	Engineered:Wastewater	v1: bare 'water' -> Freshwater
+regression	activated sludge from hong kong shatin wastewater treatment plant	Engineered:Wastewater	v1: 'plant' in 'treatment plant' -> Host-associated:Plants
+regression	wastewater treatment plant effluent	Engineered:Wastewater	v1: 'plant' in 'treatment plant' -> Host-associated:Plants
+regression	mmust wastewater treatment plant	Engineered:Wastewater	v1: 'plant' in 'treatment plant' -> Host-associated:Plants
+
+# --- built-environment cues outranked the human body-site rules --------------------
+regression	blood sample from a 51 year old man who was hospitalized in icu	Host-associated:Human:Circulatory system	v1: 'hospital' -> Built environment
+regression	hospital patient	Host-associated:Human	v1: 'hospital' -> Built environment
+regression	hospitalized patient	Host-associated:Human	v1: 'hospital' -> Built environment
+regression	urinary catheter	Host-associated:Human:Excretory system	v1: 'catheter' -> Built environment
+regression	catheter urine	Host-associated:Human:Excretory system	v1: 'catheter' -> Built environment
+
+# --- the food rule swallowed mammalian milk ---------------------------------------
+regression	breast milk	Host-associated:Human:Digestive system	v1: 'milk' -> Food production:Fermented beverages
+regression	human milk	Host-associated:Human:Digestive system	v1: 'milk' -> Food production:Fermented beverages
+regression	human breast milk	Host-associated:Human:Digestive system	v1: 'milk' -> Food production:Fermented beverages
+regression	milk from cow with clinical mastitis	Host-associated:Mammals	v1: 'milk' -> Food production:Fermented beverages
+regression	milk from clinical mastitis-infected mammaries	Host-associated:Mammals	v1: 'milk' -> Food production:Fermented beverages
+
+# --- 'marine' outranked the marine HOST rules -------------------------------------
+regression	marine macroalgae	Host-associated:Plants	v1: 'marine' -> Aquatic:Marine
+regression	marine algae	Host-associated:Plants	v1: 'marine' -> Aquatic:Marine
+regression	marine sponge	Host-associated:Porifera	v1: 'marine' -> Aquatic:Marine
+
+# --- the plant rule's food crops outranked the fermentation rule -------------------
+regression	rice wine koji	Engineered:Food production:Fermented beverages	v1: 'rice' -> Host-associated:Plants
+regression	kefir grains	Engineered:Food production:Fermented beverages	v1: 'grain' -> Host-associated:Plants
+regression	fermented rice	Engineered:Food production:Fermented beverages	v1: 'rice' -> Host-associated:Plants
+
+# --- unanchored 'wine' matched inside 'sWINE' (167 samples) ------------------------
+regression	swine farm	Host-associated:Mammals	v1: 'wine' inside 'swine' -> Food production:Fermented beverages
+regression	swine manure pit	Host-associated:Mammals	v1: 'wine' inside 'swine' -> Food production:Fermented beverages
+regression	swine nasal swab	Host-associated:Mammals:Respiratory system	v1: 'wine' inside 'swine' -> Food production:Fermented beverages
+regression	swine feces (sus scrofa domesticus)	Host-associated:Mammals:Digestive system:Large intestine	v1: 'wine' inside 'swine' -> Food production:Fermented beverages
+
+# --- misc single-token misfires ---------------------------------------------------
+regression	infant food	Engineered:Food production	food must outrank the GENERIC human cue
+regression	guttural pouch lavage	Host-associated:Human:Respiratory system	v1: unanchored 'gut' matched 'guttural'
+regression	wound humeral stem explant	Host-associated:Human:Skin	v1: '\\bstem\\b' -> Host-associated:Plants
+regression	dental biofilm	Host-associated:Human:Digestive system:Oral	v1: 'biofilm' -> Built environment
+regression	acid mine drainage sediment	Engineered:Wastewater:Industrial wastewater:Acid mine drainage:Sediment	generic sediment rule outranked AMD, filing 118 samples as plain Aquatic:Sediment
+regression	acid mine drainage	Engineered:Wastewater:Industrial wastewater:Acid mine drainage	v1: 'mine' -> Terrestrial:Deep subsurface; GOLD's real AMD path, not the invented Aquatic:Contaminated one
+regression	indoor dust from athletic faciility gym	Engineered:Built environment	v1: 'dust' -> Terrestrial:Soil
+regression	hospital hot water tap	Engineered:Built environment	v1: bare 'water' -> Freshwater
+regression	potable water dispenser (pwd) ambient (bag) from international space station	Engineered:Built environment	v1: bare 'water' -> Freshwater
+
+# --- ANCHORS: already correct, must survive the reorder ----------------------------
+anchor	soil	Environmental:Terrestrial:Soil	plain terrestrial baseline
+anchor	blood	Host-associated:Human:Circulatory system	plain clinical baseline
+anchor	feces (bos taurus)	Host-associated:Mammals:Digestive system:Large intestine	ANIMAL retarget off Human
+anchor	chicken	Host-associated:Birds	BIRD retarget with no rule hit
+anchor	rhizosphere soil	Host-associated:Plants:Rhizosphere	host beats the soil matrix
+anchor	microcystis colony from freshwater lake	Environmental:Aquatic:Freshwater:Lake	'colon' must not match inside 'colony'
+anchor	acid mine drainage of copper mine	Engineered:Wastewater:Industrial wastewater:Acid mine drainage	AMD wins over the mine/bedrock rule
+anchor	marine sediment	Environmental:Aquatic:Marine:Sediment	most-specific marine rule stays first
+anchor	lake water	Environmental:Aquatic:Freshwater:Lake	named habitat beats bare 'water'
+anchor	seawater	Environmental:Aquatic:Marine	marine still wins when no host is named
+anchor	human feces in bioreactor	Engineered:Bioreactor	containment outranks the source material
+anchor	environmental: river near wwtp effluent	Environmental:Aquatic:Freshwater:River	named habitat outranks a downstream wwtp mention
+anchor	dairy farm soil	Environmental:Terrestrial:Soil:Agricultural land	'dairy' must not drag a soil sample into food
+anchor	activated sludge	Engineered:Wastewater	wastewater baseline
+anchor	root nodule	Host-associated:Plants:Roots	plant host baseline
+anchor	leaf	Host-associated:Plants	plant host baseline
+anchor	cheese	Engineered:Food production:Fermented beverages	food baseline
+anchor	compost	Engineered:Solid waste:Composting	solid waste baseline
+anchor	pig rectal swab	Host-associated:Mammals:Digestive system:Large intestine	ANIMAL retarget on a body site
+anchor	hot spring	Environmental:Aquatic:Thermal springs:Hot (42-90C)	thermal baseline
+anchor	not known		JUNK sentinel returns None
+
+# --- gaps found by the 2026-08-18 GTDB re-adjudication dry run ---------------------
+# 11,585 in-scope genomes held per-genome text the v1 engine could not read at all, so
+# they fell back to a species-level guess or to no path.
+regression	roots	Host-associated:Plants:Roots	v1 rule was \broot\b, so the plural missed: 135 samples
+regression	root canal	Host-associated:Human:Digestive system:Oral	v1: \broot\b claimed a dental procedure for the plants
+regression	cold seep	Environmental:Aquatic:Marine:Cold seeps	v1: unmatched
+regression	tar patties	Environmental:Aquatic:Marine:Oil seeps	v1: unmatched
+regression	littoral zone	Environmental:Aquatic:Marine:Intertidal zone	v1: unmatched
+regression	cryoconite	Environmental:Aquatic:Freshwater:Ice	v1: unmatched
+regression	Ircinia ramosa	Host-associated:Porifera	v1: unmatched; sponge genus
+regression	Magallana gigas	Host-associated:Mollusca	v1: unmatched; Pacific oyster
+regression	Oncorhynchus mykiss	Host-associated:Fish	v1: unmatched
+regression	Drosophila melanogaster	Host-associated:Insecta	v1: unmatched
+regression	Caenorhabditis elegans	Host-associated:Invertebrates	v1: unmatched
+regression	Macrocystis pyrifera	Host-associated:Plants	v1: unmatched; follows the T0 kelp convention
+regression	Solanum tuberosum	Host-associated:Plants	v1: unmatched
+regression	landfill	Engineered:Solid waste:Landfill	v1: unmatched
+regression	denitrification reactor	Engineered:Bioreactor	v1: unmatched
+regression	anaerobic enrichment culture	Engineered:Lab enrichment	v1: unmatched; a culture is lab work, not a reactor
+regression	Sink Drain	Engineered:Built environment	v1: unmatched
+regression	Chinese traditional pickle	Engineered:Food production	v1: unmatched
+
+# These four fell through to the ANIMAL/BIRD fallback because nothing matched; the new
+# rules name what the sample actually IS.
+regression	Fly on pig farm	Host-associated:Insecta	v1: ANIMAL fallback -> Mammals, but the sample is a fly
+regression	cattle slaughterhouse sink	Engineered:Built environment	v1: ANIMAL fallback -> Mammals
+regression	lamb's-lettuce	Host-associated:Plants	v1: ANIMAL fallback -> Mammals; it is a plant
+regression	methanogenic reactor treating waste from cattle farms	Engineered:Bioreactor	v1: ANIMAL fallback -> Mammals
+
+# --- tokens deliberately NOT added: they name an animal, an animal part, or a strain ---
+anchor	chicken crop	Host-associated:Birds	'crop' is the bird's organ, not a plant crop
+anchor	Sigmodon hispidus (cotton rat)	Host-associated:Mammals	'cotton' must not claim the rat
+anchor	Swine waste with corn	Host-associated:Mammals	'corn' must not outrank the swine cue
+anchor	chicken corn dogs	Host-associated:Birds	same
+anchor	Straw bedding samples at chicken farm	Host-associated:Birds	'straw' must not outrank the bird cue
+anchor	Abdominal surgical drain fluid		a surgical drain is not a sink drain
+anchor	Engineered variant of Escherichia coli BL21(DE3)		'engineered' describes the STRAIN, not a habitat
+anchor	fly ash		coal fly ash is not an insect
+anchor	pig slaughterhouse drain	Host-associated:Mammals	a BARE 'drain' is not enough; only a named fixture drain is built-environment
+anchor	root nodule	Host-associated:Plants:Roots	the bare-root rule must keep working
+anchor	gills from mollusc	Host-associated:Mollusca	the mollusc cue outranks the fish gill rule
+
+# --- full rule audit, 2026-08-18 ---------------------------------------------------
+# Found by attributing all 36,325 corpus strings to the rule that classified them and
+# scanning for contradictions against the cue table. ~780 samples.
+
+# mine tailings are an engineered waste impoundment, not a pond / a mine / soil
+regression	Tailling pond	Engineered:Built environment:Tailings pond	v1: \bpond -> Freshwater (257 samples)
+regression	Oil sands tailings pond	Engineered:Built environment:Tailings pond	v1: \bpond -> Freshwater
+regression	Copper Mine tailings	Environmental:Terrestrial:Soil:Tailings	v1: \bmine -> Deep subsurface
+regression	Antimony mine tailing soil	Environmental:Terrestrial:Soil:Tailings	v1: \bmine -> Deep subsurface
+regression	Tailings mud	Environmental:Terrestrial:Soil:Tailings	v1: \bmud -> Soil
+
+# a treatment plant is a facility. v1 fixed the WASTEwater variants only; the drinking
+# water and bare water ones still fell to \bpond / \bwater\b.
+regression	Drinking water treatment plant	Engineered:Built environment:Drinking water treatment plant	v1: 'drinking water' -> Freshwater
+regression	rapid sand filter in drinking water treatment plant	Engineered:Built environment:Drinking water treatment plant	v1: 'drinking water' -> Freshwater
+regression	Water treatment plant	Engineered:Built environment:Water treatment plant	v1: bare \bwater\b -> Freshwater (56 samples)
+anchor	wastewater treatment plant effluent	Engineered:Wastewater	the v1 wastewater fix must survive
+
+# \bplant matched planted / planting / plantation
+regression	tobacco planting soil	Environmental:Terrestrial:Soil	v1: \bplant -> Host-associated:Plants
+regression	soil in a banana plantation	Environmental:Terrestrial:Soil	v1: \bplant -> Host-associated:Plants
+anchor	plant material	Host-associated:Plants	tightening \bplant to \bplants?\b must not break the real word
+anchor	part of plant	Host-associated:Plants	same
+
+# \bfloor matched 'forest floor'
+regression	forest floor	Environmental:Terrestrial:Soil:Forest soil	v1: \bfloor -> Engineered:Built environment (30 samples)
+anchor	bathroom floor	Engineered:Built environment	the built-environment reading of \bfloor must survive
+anchor	kitchen floor	Engineered:Food production	pre-existing: 'kitchen' outranks \bfloor; recorded, not changed
+
+# ontology accessions leaked into matching: FOODON: contains 'food'
+regression	part of plant [FOODON:03420174]	Host-associated:Plants	v1: 'FOODON' matched \bfood -> Engineered:Food production
+anchor	plant cell [PO:0009002]	Host-associated:Plants	unchanged, but must survive the normalizer change
+
+# 'rice' and 'grain' carried no word boundary
+regression	price list		v1: 'rice' inside 'price' -> Host-associated:Plants
+anchor	licorice	Host-associated:Plants	v1 reached this by matching 'rice' inside it; licorice IS a plant, so the T9b rule now gets there on purpose
+regression	Microscale soil grain	Environmental:Terrestrial:Soil	v1: bare 'grain' -> Host-associated:Plants (22 samples)
+anchor	rice paddy	Host-associated:Plants	the real cereal must still resolve
+anchor	wheat grain	Host-associated:Plants	same
+
+# \blea(f|ves) matched 'leafy'
+regression	leafy wood soil	Environmental:Terrestrial:Soil	v1: \blea(f|ves) matched 'leafy' -> Host-associated:Plants
+anchor	leaf surface	Host-associated:Plants	the real leaf must still resolve
+
+# a named host outranks the habitat it sat in (the T0 convention), but a compound that
+# names a HABITAT keeps the habitat reading
+regression	cold seep mussel	Host-associated:Mollusca	the mussel is the organism; 'cold seep' is where it lived (37 samples)
+anchor	mussel bed	Environmental:Aquatic:Marine:Intertidal zone	a bed is a place, not the organism
+anchor	cold seep	Environmental:Aquatic:Marine:Cold seeps	the bare habitat is unchanged
+anchor	biofilm fraction from bioreactor innoculated with Activated Sludge Tailings Effluent Remediation (ASTER)	Engineered:Wastewater	the bare tailings rule must lose to engineered containment
+anchor	nodules of Robinia pseudoacacia in mine tailing	Host-associated:Plants:Roots	the bare tailings rule must lose to a named host
+regression	uranium tailings	Environmental:Terrestrial:Soil:Tailings	v1: unmatched
+anchor	Freshwater sample from downstream of wastewater treatment plant	Environmental:Aquatic:Freshwater	a named aquatic habitat outranks a downstream wastewater mention
+anchor	sludge of membrane bioreactor in a waste-water treatment plant	Engineered:Wastewater	the hyphenated spelling must not reach the generic water-treatment rule
+
+# --- rule audit round 2, 2026-08-18 ------------------------------------------------
+# Found by detectors orthogonal to the cue scan: mid-word match sweep, cross-field
+# disagreement, and host_scientific_name values landing outside Host-associated.
+regression	lactating dairy cow	Host-associated:Mammals	v1: 'dairy' -> Fermented beverages; the ANIMAL retarget only fires for Human-targeted rules
+regression	dairy cattle	Host-associated:Mammals	v1: 'dairy' -> Fermented beverages (146 samples)
+anchor	dairy products	Engineered:Food production:Fermented beverages	the food reading must survive
+anchor	raw milk	Engineered:Food production:Fermented beverages	same
+regression	Septic tank	Engineered:Wastewater:Sewage	v1: bare 'septic' -> Host-associated:Human:Circulatory system
+regression	human waste from septic tank	Engineered:Wastewater:Sewage	v1: bare 'septic' -> Circulatory system
+anchor	blood of patient with septicemic melioidosis	Host-associated:Human:Circulatory system	the clinical reading must survive
+regression	Alviniconcha kojimai	Host-associated:Mollusca	v1: \bkoji matched 'kojimai'; it is a deep-sea vent snail
+anchor	koji mold	Engineered:Food production:Fermented beverages	the real koji must survive
+regression	flocular biomat		v1: 'ocular' inside 'flocular' -> Host-associated:Human
+anchor	intraocular lens	Host-associated:Human	the lookbehind must not break the real eye compound
+regression	Non-hospitalized person	Host-associated:Human	v1: 'hospital' -> Engineered:Built environment
+anchor	hospital sink	Engineered:Built environment	the real hospital cue must survive
+regression	fellfield soil	Environmental:Terrestrial:Soil:Tundra	v1: 'field soil' inside 'fellfield' -> Agricultural land
+anchor	cornfield soil	Environmental:Terrestrial:Soil:Agricultural land	a real field soil must survive
+regression	Diamond firetail (Stagonopleura guttata)		v1: 'retail' inside 'firetail' -> Food production; now correctly unresolved rather than wrong
+anchor	retail chicken meat	Engineered:Food production	the real retail cue must survive
+regression	Agroindustrial solid residues (sunflower seed oil industry)	Engineered:Solid waste:Industrial waste	v1: 'groin' -> Human:Skin, then 'flower' inside 'sunflower' -> Plants
+anchor	epidermal swab	Host-associated:Human:Skin	'dermal' inside 'epidermal' is CORRECT and must not be boundary-guarded
+anchor	nasogastric aspirate	Host-associated:Human:Digestive system	'gastric' inside 'nasogastric' is correct
+anchor	submarine volcano	Environmental:Aquatic:Marine	'marine' inside 'submarine' is correct
+regression	Submaxillary lymph node	Host-associated:Human:Lymphatic system	only ever resolved by accident, via 'axilla' inside 'submaxillary'
+regression	Postoperative maxillary cyst	Host-associated:Human	same accident; now named properly
+anchor	axillary swab	Host-associated:Human:Skin	the real axilla must still resolve
+
+# --- audit recoveries: strings the tightening dropped that were RIGHT before --------
+regression	Oat, Spring, Green grain	Host-associated:Plants	dropping the unbounded 'grain' cost the real cereals (48 samples)
+regression	stored grains	Host-associated:Plants	same
+anchor	Microscale soil grain	Environmental:Terrestrial:Soil	but a grain OF SOIL must stay soil -- \bsoil claims it far above
+anchor	soil grain	Environmental:Terrestrial:Soil	same
+regression	oil palm plantation	Environmental:Terrestrial:Soil:Agricultural land	a plantation is agricultural land, which is why \bplant was tightened
+regression	Cultivated plantation	Environmental:Terrestrial:Soil:Agricultural land	same
+regression	Plantain tree	Host-associated:Plants	a plantain is a plant; \bplants?\b stopped matching it
+regression	Leafy green	Host-associated:Plants	\bleaf\b stopped matching 'leafy'
+anchor	leafy wood soil	Environmental:Terrestrial:Soil	but 'leafy wood soil' must stay soil
+regression	plantar heel	Host-associated:Human:Skin	'plantar' is the sole of the foot; it was reading as a plant
+regression	planted forest	Environmental:Terrestrial:Soil:Forest soil	lost its only cue when \bplant was tightened
+anchor	kelp forest	Host-associated:Plants	the bare \bforest\b recovery must not steal the kelp
+regression	Cricetus_cricetus	Host-associated:Mammals	a hamster, previously matched only by 'rice' inside 'cricetus'

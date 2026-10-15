@@ -1,0 +1,25 @@
+{
+  "type": "samples",
+  "id": "ERS1",
+  "attributes": {
+    "latitude": "56.7527",
+    "longitude": "16.6882",
+    "biosample": "SAMEA3878206",
+    "accession": "ERS1",
+    "collection-date": "2015-06-01",
+    "geo-loc-name": "Sweden",
+    "sample-desc": "Moose rumen content",
+    "environment-biome": "Moose rumen",
+    "environment-feature": "rumen",
+    "environment-material": "rumen content",
+    "sample-name": "Moose rumen sample 1",
+    "sample-alias": "MR-1",
+    "host-tax-id": "9852",
+    "species": null
+  },
+  "relationships": {
+    "biome": {"data": {"type": "biomes", "id": "root:Host-associated:Mammals:Digestive system:Foregut:Rumen"}},
+    "runs": {"data": null}
+  },
+  "links": {"self": "https://www.ebi.ac.uk/metagenomics/api/v1/samples/ERS1"}
+}

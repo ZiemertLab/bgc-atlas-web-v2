@@ -1,0 +1,20 @@
+LOCUS       CM777777.1              6000 bp    DNA     linear   UNK 01-JAN-1980
+DEFINITION  CM777777.1.
+ACCESSION   CM777777
+VERSION     CM777777.1
+FEATURES             Location/Qualifiers
+     protocluster    1..6000
+                     /aStool="rule-based-clusters"
+                     /category="RiPP"
+                     /contig_edge="False"
+                     /core_location="[1000:4000](+)"
+                     /product="lanthipeptide"
+                     /protocluster_number="1"
+                     /tool="antismash"
+     CDS             151..510
+                     /locus_tag="ctg1_1"
+                     /product="hypothetical protein"
+                     /transl_table=11
+ORIGIN
+        1 atgctaagca aattattata tttattatta acagtgccac tttatgcttg gttaatatca
+//

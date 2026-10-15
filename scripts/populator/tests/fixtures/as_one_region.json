@@ -1,0 +1,23 @@
+{
+  "version": "0.1.2",
+  "taxon": "bacteria",
+  "records": [
+    {
+      "id": "FRAM_RAS_F4_03_1819_1-c000000000021",
+      "areas": [
+        {"start": 0, "end": 6443, "products": ["hydrogen-cyanide"],
+         "protoclusters": {"0": {"category": "other", "core_start": 926, "core_end": 3758, "product": "hydrogen-cyanide", "start": 0, "end": 6443}}}
+      ],
+      "features": [
+        {"type": "region", "location": "[0:6443](+)", "qualifiers": {"region_number": ["1"], "contig_edge": ["True"], "product": ["hydrogen-cyanide"]}},
+        {"type": "CDS", "location": "[1:874](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[900:1500](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[1600:2200](-)", "qualifiers": {}},
+        {"type": "CDS", "location": "[2300:3000](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[3100:3800](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[4000:6400](+)", "qualifiers": {}},
+        {"type": "PFAM_domain", "location": "[10:200]", "qualifiers": {}}
+      ]
+    }
+  ]
+}

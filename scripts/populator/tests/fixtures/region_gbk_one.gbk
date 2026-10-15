@@ -1,0 +1,51 @@
+LOCUS       CM000741.1             23535 bp    DNA     linear   UNK 01-JAN-1980
+DEFINITION  CM000741.1.
+ACCESSION   CM000741
+VERSION     CM000741.1
+FEATURES             Location/Qualifiers
+     region          1..23535
+                     /candidate_cluster_numbers="1"
+                     /contig_edge="False"
+                     /product="azole-containing-RiPP"
+                     /region_number="1"
+                     /rules="((YcaO or TIGR03604) and (((thio_amide and (PF06968
+                     or PF04055 or PF07366)) or Lant_dehydr_C or Lant_dehydr_N
+                     or (PF06968 or PF04055 or PF07366)) or (goadsporin_like or
+                     PF00881 or TIGR03605)) or TIGR03882 or TIGR03603 or
+                     thiostrepton or TIGR03602)"
+                     /tool="antismash"
+     cand_cluster    1..23535
+                     /candidate_cluster_number="1"
+                     /contig_edge="False"
+                     /kind="single"
+                     /product="azole-containing-RiPP"
+                     /protoclusters="1"
+                     /tool="antismash"
+     protocluster    1..23535
+                     /aStool="rule-based-clusters"
+                     /category="RiPP"
+                     /contig_edge="False"
+                     /core_location="[10000:13535](-)"
+                     /cutoff="10000"
+                     /neighbourhood="10000"
+                     /product="azole-containing-RiPP"
+                     /protocluster_number="1"
+                     /tool="antismash"
+     proto_core      complement(10001..13535)
+                     /aStool="rule-based-clusters"
+                     /tool="antismash"
+                     /product="azole-containing-RiPP"
+                     /protocluster_number="1"
+     CDS             151..510
+                     /locus_tag="ctg1_1177"
+                     /product="hypothetical protein"
+                     /transl_table=11
+                     /translation="MLRRKLLYLLLTVPLYAWLISMTKIELVALFLGYVFIFSQLNRIQ"
+     CDS             627..2126
+                     /locus_tag="ctg1_1178"
+                     /product="Cysteine desulfurase"
+                     /transl_table=11
+                     /translation="MQIYLDNNATTKVDPEVLDAMMPYLTEYYGNPSS"
+ORIGIN
+        1 atgctaagca aattattata tttattatta acagtgccac tttatgcttg gttaatatca
+//

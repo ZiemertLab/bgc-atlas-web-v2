@@ -1,0 +1,13 @@
+{
+  "type": "studies",
+  "id": "MGYS1",
+  "attributes": {
+    "accession": "MGYS1",
+    "samples-count": 1,
+    "bioproject": "PRJEB12797",
+    "centre-name": "KTH, SCIENCE FOR LIFE LABORATORY",
+    "study-abstract": "Shotgun metagenomics of moose rumen to study microbial diversity.",
+    "study-name": "Shotgun metagenomics of moose rumen"
+  },
+  "links": {"self": "https://www.ebi.ac.uk/metagenomics/api/v1/studies/MGYS1"}
+}

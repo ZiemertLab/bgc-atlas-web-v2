@@ -1,0 +1,27 @@
+<?xml version="1.0" ?>
+<RecordSet>
+  <DocumentSummary uid="802201">
+    <Project>
+      <ProjectID><ArchiveID accession="PRJNA802201" archive="NCBI" id="802201"/></ProjectID>
+      <ProjectDescr>
+        <Name>Bacillus subtilis</Name>
+        <Title>Crop Bioprotection Raw sequence reads</Title>
+        <Description>Genome sequencing of Bacillus isolates.</Description>
+      </ProjectDescr>
+    </Project>
+  </DocumentSummary>
+  <DocumentSummary uid="2">
+    <Project>
+      <ProjectID><ArchiveID accession="PRJNA000002"/></ProjectID>
+      <ProjectDescr>
+        <Name>Soil metagenome</Name>
+      </ProjectDescr>
+    </Project>
+  </DocumentSummary>
+  <DocumentSummary uid="3">
+    <Project>
+      <ProjectID><ArchiveID accession="PRJNA000003"/></ProjectID>
+      <ProjectDescr><Title>none</Title><Name>missing</Name></ProjectDescr>
+    </Project>
+  </DocumentSummary>
+</RecordSet>

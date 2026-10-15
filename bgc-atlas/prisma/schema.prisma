@@ -1,0 +1,982 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["views"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model DataSource {
+  id             String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  source_type    String
+  name           String      @db.VarChar(200)
+  description    String?
+  source_url     String?
+  user_upload_id String?     @db.Uuid
+  created_at     DateTime?   @default(now()) @db.Timestamptz(6)
+  user_upload    UserUpload? @relation(fields: [user_upload_id], references: [id], onUpdate: NoAction)
+
+  @@index([source_type], map: "idx_data_sources_source_type")
+  @@index([user_upload_id], map: "idx_data_sources_user_upload_id")
+  @@map("data_sources")
+}
+
+model UserUpload {
+  id           String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  first_name   String       @db.VarChar(100)
+  last_name    String       @db.VarChar(100)
+  institution  String?      @db.VarChar(200)
+  email        String       @db.VarChar(255)
+  created_at   DateTime?    @default(now()) @db.Timestamptz(6)
+  data_sources DataSource[]
+
+  @@index([email], map: "idx_user_uploads_email")
+  @@map("user_uploads")
+}
+
+model Study {
+  id                  String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  external_id         String?
+  title               String?
+  abstract            String?
+  study_type          String?
+  study_name          String?
+  center_name         String?
+  accession           String?       @unique
+  bioproject          String?
+  secondary_accession String?
+  data_source_ids     String[]      @default([]) @db.Uuid
+  biome_ids           String[]      @default([]) @db.Uuid
+  metadata            Json          @default("{}")
+  created_at          DateTime?     @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime?     @default(now()) @db.Timestamptz(6)
+  run_studies         RunStudy[]
+  study_biomes        StudyBiome[]
+  study_samples       StudySample[]
+
+  @@index([biome_ids], map: "idx_studies_biome_ids_gin", type: Gin)
+  @@index([data_source_ids], map: "idx_studies_data_source_ids_gin", type: Gin)
+  @@index([metadata], map: "idx_studies_metadata_gin", type: Gin)
+  @@map("studies")
+}
+
+model Sample {
+  id                            String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  external_id                   String?             @unique
+  name                          String?
+  description                   String?
+  collection_date               DateTime?           @db.Date
+  collection_date_end           DateTime?           @db.Date
+  geographic_location           String?
+  location_resolution           String?
+  latitude                      Decimal?            @db.Decimal
+  longitude                     Decimal?            @db.Decimal
+  depth                         Decimal?            @db.Decimal(10, 3)
+  depth_min_meters              Decimal?            @db.Decimal
+  depth_max_meters              Decimal?            @db.Decimal
+  elevation_meters              Decimal?            @db.Decimal
+  temperature                   Decimal?            @db.Decimal
+  ph                            Decimal?            @db.Decimal
+  salinity                      Decimal?            @db.Decimal
+  salinity_unit                 String?
+  dissolved_oxygen              Decimal?            @db.Decimal
+  dissolved_oxygen_unit         String?
+  nitrate                       Decimal?            @db.Decimal
+  nitrate_unit                  String?
+  nitrite                       Decimal?            @db.Decimal
+  nitrite_unit                  String?
+  ammonium                      Decimal?            @db.Decimal
+  ammonium_unit                 String?
+  phosphate                     Decimal?            @db.Decimal
+  phosphate_unit                String?
+  conductivity                  Decimal?            @db.Decimal
+  conductivity_unit             String?
+  dissolved_organic_carbon      Decimal?            @db.Decimal
+  dissolved_organic_carbon_unit String?
+  filtration_lower_threshold_um Decimal?            @db.Decimal
+  filtration_upper_threshold_um Decimal?            @db.Decimal
+  current_precipitation_mm      Decimal?            @db.Decimal
+  mean_annual_precipitation_mm  Decimal?            @db.Decimal
+  mean_annual_temperature       Decimal?            @db.Decimal
+  environmental_package         String?
+  environment_biome             String?
+  environment_feature           String?
+  environment_material          String?
+  host_taxid                    Int?
+  host_scientific_name          String?
+  geolocation_name              String?
+  sample_alias                  String?
+  accession                     String?
+  gold_ecosystem_path           String?
+  gold_ecosystem_metadata       Json?               @default("{}")
+  checkm_completeness           Decimal?            @db.Decimal
+  checkm_contamination          Decimal?            @db.Decimal
+  genome_size                   BigInt?
+  genome_quality                String?
+  data_source_ids               String[]            @default([]) @db.Uuid
+  metadata                      Json                @default("{}")
+  created_at                    DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at                    DateTime?           @default(now()) @db.Timestamptz(6)
+  sample_analyses               SampleAnalysis[]
+  sample_assemblies             SampleAssembly[]
+  sample_biomes                 SampleBiome[]
+  sample_measurements           SampleMeasurement[]
+  sample_runs                   SampleRun[]
+  study_samples                 StudySample[]
+
+  @@index([data_source_ids], map: "idx_samples_data_source_ids_gin", type: Gin)
+  @@index([latitude], map: "idx_samples_latitude")
+  @@index([longitude], map: "idx_samples_longitude")
+  @@index([metadata], map: "idx_samples_metadata_gin", type: Gin)
+  @@map("samples")
+}
+
+model Run {
+  id                  String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  external_id         String?
+  name                String?       @db.VarChar(200)
+  instrument_model    String?       @db.VarChar(100)
+  instrument_platform String?       @db.VarChar(50)
+  accession           String?
+  secondary_accession String?
+  metadata            Json          @default("{}")
+  created_at          DateTime?     @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime?     @default(now()) @db.Timestamptz(6)
+  run_analyses        RunAnalysis[]
+  run_assemblies      RunAssembly[]
+  run_studies         RunStudy[]
+  sample_runs         SampleRun[]
+
+  @@index([metadata], map: "idx_runs_metadata_gin", type: Gin)
+  @@map("runs")
+}
+
+/// A genome's own resolved lineage lives in `assembly_taxonomy`, read
+/// via raw SQL — hence no relation here. Do NOT infer a genome's taxonomy by picking one
+/// of its BGCs: for 12.7% of genomes the BGCs disagree, which is the bug 0087 exists to fix.
+model Assembly {
+  id                    String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  external_id           String?
+  name                  String?            @db.VarChar(200)
+  source_type           String
+  assembly_level        String?            @db.VarChar(50)
+  sequencing_technology String?            @db.VarChar(200)
+  contig_count          Int?
+  accession             String?            @unique
+  data_source_ids       String[]           @default([]) @db.Uuid
+  metadata              Json               @default("{}")
+  created_at            DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime?          @default(now()) @db.Timestamptz(6)
+  antismash_runs        AntiSmashRun[]
+  assembly_analyses     AssemblyAnalysis[]
+  bgcs                  Bgc[]
+  run_assemblies        RunAssembly[]
+  sample_assemblies     SampleAssembly[]
+
+  @@index([data_source_ids], map: "idx_assemblies_data_source_ids_gin", type: Gin)
+  @@index([metadata], map: "idx_assemblies_metadata_gin", type: Gin)
+  @@index([source_type], map: "idx_assemblies_source_type")
+  @@map("assemblies")
+}
+
+model Analysis {
+  id                String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  external_id       String?
+  name              String?            @db.VarChar(200)
+  analysis_type     String             @db.VarChar(100)
+  tool_name         String?            @db.VarChar(100)
+  tool_version      String?            @db.VarChar(50)
+  parameters        String?
+  run_date          DateTime?          @db.Date
+  accession         String?            @unique
+  data_source_ids   String[]           @default([]) @db.Uuid
+  metadata          Json               @default("{}")
+  created_at        DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
+  antismash_runs    AntiSmashRun[]
+  assembly_analyses AssemblyAnalysis[]
+  bgcs              Bgc[]
+  run_analyses      RunAnalysis[]
+  sample_analyses   SampleAnalysis[]
+
+  @@index([analysis_type], map: "idx_analyses_analysis_type")
+  @@index([data_source_ids], map: "idx_analyses_data_source_ids_gin", type: Gin)
+  @@index([metadata], map: "idx_analyses_metadata_gin", type: Gin)
+  @@index([tool_name], map: "idx_analyses_tool_name")
+  @@map("analyses")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model Biome {
+  id            String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name          String        @db.VarChar(200)
+  description   String?
+  parent_id     String?       @db.Uuid
+  level         Int?
+  metadata      Json          @default("{}")
+  created_at    DateTime?     @default(now()) @db.Timestamptz(6)
+  parent        Biome?        @relation("BiomeHierarchy", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children      Biome[]       @relation("BiomeHierarchy")
+  sample_biomes SampleBiome[]
+  study_biomes  StudyBiome[]
+
+  @@index([metadata], map: "idx_biomes_metadata_gin", type: Gin)
+  @@index([parent_id], map: "idx_biomes_parent_id")
+  @@map("biomes")
+}
+
+model SampleMeasurement {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  sample_id   String    @db.Uuid
+  key         String
+  value       String
+  unit        String?
+  measured_at DateTime? @db.Date
+  source      String?
+  metadata    Json      @default("{}")
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  sample      Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([key], map: "idx_sample_measurements_key")
+  @@map("sample_measurements")
+}
+
+model StudySample {
+  study_id   String    @db.Uuid
+  sample_id  String    @db.Uuid
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  sample     Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  study      Study     @relation(fields: [study_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([study_id, sample_id])
+  @@index([sample_id], map: "idx_study_samples_sample_id")
+  @@index([study_id], map: "idx_study_samples_study_id")
+  @@map("study_samples")
+}
+
+model SampleRun {
+  sample_id  String    @db.Uuid
+  run_id     String    @db.Uuid
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  run        Run       @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sample     Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sample_id, run_id])
+  @@index([run_id], map: "idx_sample_runs_run_id")
+  @@index([sample_id], map: "idx_sample_runs_sample_id")
+  @@map("sample_runs")
+}
+
+model RunAssembly {
+  run_id      String    @db.Uuid
+  assembly_id String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  assembly    Assembly  @relation(fields: [assembly_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  run         Run       @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([run_id, assembly_id])
+  @@index([assembly_id], map: "idx_run_assemblies_assembly_id")
+  @@index([run_id], map: "idx_run_assemblies_run_id")
+  @@map("run_assemblies")
+}
+
+model SampleAssembly {
+  sample_id   String    @db.Uuid
+  assembly_id String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  assembly    Assembly  @relation(fields: [assembly_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sample      Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sample_id, assembly_id])
+  @@index([assembly_id], map: "idx_sample_assemblies_assembly_id")
+  @@index([sample_id], map: "idx_sample_assemblies_sample_id")
+  @@map("sample_assemblies")
+}
+
+model AssemblyAnalysis {
+  assembly_id String    @db.Uuid
+  analysis_id String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  analysis    Analysis  @relation(fields: [analysis_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  assembly    Assembly  @relation(fields: [assembly_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([assembly_id, analysis_id])
+  @@index([analysis_id], map: "idx_assembly_analyses_analysis_id")
+  @@index([assembly_id], map: "idx_assembly_analyses_assembly_id")
+  @@map("assembly_analyses")
+}
+
+model SampleAnalysis {
+  sample_id   String    @db.Uuid
+  analysis_id String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  analysis    Analysis  @relation(fields: [analysis_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sample      Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sample_id, analysis_id])
+  @@index([analysis_id], map: "idx_sample_analyses_analysis_id")
+  @@index([sample_id], map: "idx_sample_analyses_sample_id")
+  @@map("sample_analyses")
+}
+
+model RunAnalysis {
+  run_id      String    @db.Uuid
+  analysis_id String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  analysis    Analysis  @relation(fields: [analysis_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  run         Run       @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([run_id, analysis_id])
+  @@index([analysis_id], map: "idx_run_analyses_analysis_id")
+  @@index([run_id], map: "idx_run_analyses_run_id")
+  @@map("run_analyses")
+}
+
+model SampleBiome {
+  sample_id  String    @db.Uuid
+  biome_id   String    @db.Uuid
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  biome      Biome     @relation(fields: [biome_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sample     Sample    @relation(fields: [sample_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sample_id, biome_id])
+  @@index([biome_id], map: "idx_sample_biomes_biome_id")
+  @@index([sample_id], map: "idx_sample_biomes_sample_id")
+  @@map("sample_biomes")
+}
+
+model StudyBiome {
+  study_id   String    @db.Uuid
+  biome_id   String    @db.Uuid
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  biome      Biome     @relation(fields: [biome_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  study      Study     @relation(fields: [study_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([study_id, biome_id])
+  @@index([biome_id], map: "idx_study_biomes_biome_id")
+  @@index([study_id], map: "idx_study_biomes_study_id")
+  @@map("study_biomes")
+}
+
+model RunStudy {
+  run_id     String    @db.Uuid
+  study_id   String    @db.Uuid
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  run        Run       @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  study      Study     @relation(fields: [study_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([run_id, study_id])
+  @@index([run_id], map: "idx_run_studies_run_id")
+  @@index([study_id], map: "idx_run_studies_study_id")
+  @@map("run_studies")
+}
+
+model AntiSmashRun {
+  id                      String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name                    String?             @db.VarChar(200)
+  file_path               String?
+  analysis_id             String?             @db.Uuid
+  assembly_id             String?             @db.Uuid
+  num_bgcs                Int?
+  pipeline_version        String?             @default("1.0")
+  antismash_version       String?
+  taxon                   String?             @db.VarChar(50)
+  processing_time_seconds Int?
+  total_contigs           Int?
+  input_filename          String?
+  status                  AntiSmashRunStatus? @default(pending)
+  created_at              DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime?           @default(now()) @db.Timestamptz(6)
+  analysis                Analysis?           @relation(fields: [analysis_id], references: [id], onUpdate: NoAction)
+  assembly                Assembly?           @relation(fields: [assembly_id], references: [id], onUpdate: NoAction)
+  bgcs                    Bgc[]
+
+  @@index([analysis_id], map: "idx_antismash_runs_analysis_id")
+  @@index([assembly_id], map: "idx_antismash_runs_assembly_id")
+  @@index([status], map: "idx_antismash_runs_status")
+  @@map("antismash_runs")
+}
+
+model Gcf {
+  id                    String         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name                  String?        @unique @db.VarChar(200)
+  /// Display-only human-readable alias (e.g. 'lightened-sow'). Never an identifier.
+  pet_name              String?        @unique @db.VarChar(32)
+  description           String?
+  representative_bgc_id String?        @db.Uuid
+  cluster_method        String?        @db.VarChar(100)
+  /// clustering-v3 tier: 'seed' (defined by the truncation seed) | 'fragmented'
+  /// (de-novo clusters of the leftovers). Replaces v2's family_origin.
+  family_class          String
+  /// Does this family get a /gcfs entry and a detail page? False for the 146,360
+  /// fragmented singletons and the 34 seed families that exist only as somebody's
+  /// secondary hit -- they keep their bgc_gcf rows, they just are not browsable.
+  listed                Boolean
+  dom_category          String?
+  /// PRIMARY members only, so family sizes sum to the placed-BGC count rather than
+  /// double-counting secondary memberships.
+  n_bgc                 Int?
+  created_at            DateTime?      @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime?      @default(now()) @db.Timestamptz(6)
+  bgc_gcf               BgcGcf[]
+  representative_bgc    Bgc?           @relation("GcfRepresentativeBgc", fields: [representative_bgc_id], references: [id], onUpdate: NoAction)
+  export_jobs           GcfExportJob[]
+
+  @@index([cluster_method], map: "idx_gcfs_cluster_method")
+  @@index([representative_bgc_id], map: "idx_gcfs_representative_bgc_id")
+  @@index([family_class], map: "idx_gcfs_family_class")
+  @@index([listed], map: "idx_gcfs_listed")
+  @@index([n_bgc], map: "idx_gcfs_n_bgc")
+  @@map("gcfs")
+}
+
+/// clustering-v3 membership. A BGC can belong to SEVERAL families: 2,499,475 of them
+/// do (22% of everything the seed tier places), all via the sequence-containment route.
+///
+/// Under v2 the primary key was (bgc_id, threshold), which structurally allowed only
+/// one family per BGC per resolution -- and five query sites still rely on a bgc_gcf
+/// join not multiplying rows. That guarantee is preserved by `is_primary` plus a
+/// partial unique index `(bgc_id) WHERE is_primary`, NOT by the
+/// primary key. Any query that wants one row per BGC must say `AND bg.is_primary`;
+/// without it the join fans out silently rather than erroring.
+model BgcGcf {
+  bgc_id     String  @db.Uuid
+  gcf_id     String  @db.Uuid
+  /// Raw BiG-SLICE feature distance, LOWER IS BETTER. Not bounded by 0.4 -- birch
+  /// assigns rank-0 members out to 1.101.
+  distance   Float?
+  is_primary Boolean
+  /// 0 = primary, then 1.. in best-BITSCORE order. NOT distance order: a secondary
+  /// family can be nearer than the primary, because rank comes from bitscore while
+  /// distance comes from percent identity. Sort "also in" lists by rank.
+  rank       Int     @db.SmallInt
+  bgc        Bgc     @relation(fields: [bgc_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  gcf        Gcf     @relation(fields: [gcf_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([bgc_id, gcf_id])
+  @@index([gcf_id], map: "idx_bgc_gcf_gcf")
+  @@map("bgc_gcf")
+}
+
+model BgcFeatures {
+  bgc_id                 String   @id @db.Uuid
+  completeness_class     String?
+  route                  String?
+  placement_status       String?
+  final_cluster_id       String?  @db.Uuid
+  n_biosynthetic         Int?
+  n_biosynthetic_add     Int?
+  n_regulatory           Int?
+  n_transport            Int?
+  n_resistance           Int?
+  n_other                Int?
+  hypothetical_count     Int?
+  n_pfam_domain          Int?
+  n_asdomain             Int?
+  n_asmodule             Int?
+  asdomain_types_ordered String[]
+  sec_met_domains        String[]
+  core_gene_types        String[]
+  ordered_asdomain_string String?
+  cand_kinds             String[]
+  n_protoclusters        Int?
+  proto_core_span_bp     BigInt?
+  hybrid_structure       String?
+  contig_length          BigInt?
+  contig_edge            Boolean?
+  warnings               String[]
+  record_id              String?
+  region                 Int?
+  primary_category       String?
+  bgc                    Bgc      @relation(fields: [bgc_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([route], map: "idx_bgc_features_route")
+  @@index([placement_status], map: "idx_bgc_features_place")
+  @@index([completeness_class], map: "idx_bgc_features_compl")
+  @@map("bgc_features")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model Bgc {
+  id                      String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  filename                String                    @unique
+  assembly                String                    @db.Uuid
+  analysis_id             String?                   @db.Uuid
+  antismash_run_id        String?                   @db.Uuid
+  contig                  String
+  start_pos               Int
+  end_pos                 Int
+  core_start_pos          Int?
+  core_end_pos            Int?
+  product_category        String[]                  @default([])
+  product                 String[]                  @default([])
+  anchor                  String?                   @db.VarChar(15)
+  gc_content              Decimal?                  @db.Decimal(5, 4)
+  detection_tool          String?                   @db.VarChar(100)
+  cutoff_distance         Int?
+  num_cds_features        Int?
+  num_domains             Int?
+  tax_id                  Int?
+  is_complete             Boolean?                  @default(true)
+  created_at              DateTime?                 @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime?                 @default(now()) @db.Timestamptz(6)
+  analysis                Analysis?                 @relation(fields: [analysis_id], references: [id], onUpdate: NoAction)
+  antismash_run           AntiSmashRun?             @relation(fields: [antismash_run_id], references: [id], onUpdate: NoAction)
+  assembly_rel            Assembly                  @relation(fields: [assembly], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  bgc_gcf                 BgcGcf[]
+  features                BgcFeatures?
+  representative_of_gcf   Gcf[]                     @relation("GcfRepresentativeBgc")
+
+  @@index([analysis_id], map: "idx_bgcs_analysis_id")
+  @@index([antismash_run_id], map: "idx_bgcs_antismash_run_id")
+  @@index([assembly], map: "idx_bgcs_assembly")
+  @@index([assembly, contig, start_pos, end_pos], map: "idx_bgcs_assembly_coords_btree")
+  @@index([contig], map: "idx_bgcs_contig")
+  @@index([assembly, contig, start_pos, end_pos], map: "idx_bgcs_coordinates")
+  @@index([filename], map: "idx_bgcs_filename")
+  @@index([is_complete], map: "idx_bgcs_is_complete")
+  @@index([product_category], map: "idx_bgcs_product_category_gin", type: Gin)
+  @@index([product], map: "idx_bgcs_product_gin", type: Gin)
+  @@index([tax_id], map: "idx_bgcs_tax_id")
+  @@map("bgcs")
+}
+
+/// Hierarchical GTDB taxonomy lineages used by BGC metadata search and genome collection views.
+/// Per-BGC assignment lives in `bgc_taxonomy` (bgcs carries no taxonomy column),
+/// which is read via raw SQL — hence no relation back to Bgc here.
+model Taxonomy {
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  gtdb_lineage String    @unique(map: "uq_gtdb_lineage")
+  domain       String?
+  phylum       String?
+  class        String?
+  order_name   String?
+  family       String?
+  genus        String?
+  species      String?
+  source       String?
+  is_partial   Boolean?  @default(false)
+  rank_depth   Int?
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([domain], map: "idx_taxonomies_domain")
+  @@index([phylum], map: "idx_taxonomies_phylum")
+  @@index([class], map: "idx_taxonomies_class")
+  @@index([order_name], map: "idx_taxonomies_order")
+  @@index([family], map: "idx_taxonomies_family")
+  @@index([genus], map: "idx_taxonomies_genus")
+  @@index([species], map: "idx_taxonomies_species")
+  @@index([rank_depth], map: "idx_taxonomies_rank_depth")
+  @@index([source], map: "idx_taxonomies_source")
+  @@map("taxonomies")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model loader_progress {
+  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  loader_name   String
+  run_id        String    @db.Uuid
+  entity_type   String
+  entity_id     String
+  status        String
+  error_message String?
+  started_at    DateTime? @db.Timestamptz(6)
+  completed_at  DateTime? @db.Timestamptz(6)
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([loader_name, run_id, entity_type, entity_id], map: "idx_loader_progress_lookup")
+  @@index([run_id, status], map: "idx_loader_progress_run")
+  @@index([loader_name, run_id, status], map: "idx_loader_progress_status")
+}
+
+model UserContribution {
+  id                String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  submission_id     String                   @unique @db.VarChar(100)
+  name              String                   @db.VarChar(255)
+  institute         String                   @db.VarChar(255)
+  email             String                   @db.VarChar(255)
+  description       String
+  assembly_count    Int                      @default(0)
+  metadata_provided Boolean?                 @default(false)
+  status            String                   @default("pending") @db.VarChar(50)
+  reviewed_by       String?                  @db.VarChar(100)
+  reviewed_at       DateTime?                @db.Timestamptz(6)
+  notes             String?
+  created_at        DateTime                 @default(now()) @db.Timestamptz(6)
+  samples           UserContributionSample[]
+
+  @@index([status], map: "idx_user_contributions_status")
+  @@index([created_at(sort: Desc)], map: "idx_user_contributions_created_at")
+  @@index([email], map: "idx_user_contributions_email")
+  @@map("user_contributions")
+}
+
+model UserContributionSample {
+  id                 String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  contribution_id    String           @db.Uuid
+  contribution       UserContribution @relation(fields: [contribution_id], references: [id], onDelete: Cascade)
+  sample_alias       String           @db.VarChar(255)
+  assembly_filenames String[]         @default([])
+
+  // Location
+  latitude            Decimal? @db.Decimal
+  longitude           Decimal? @db.Decimal
+  geographic_location String?  @db.VarChar(500)
+  location_resolution String?  @db.VarChar(100)
+  geolocation_name    String?  @db.VarChar(500)
+
+  // Environmental
+  environment_biome     String? @db.VarChar(500)
+  environment_feature   String? @db.VarChar(500)
+  environment_material  String? @db.VarChar(500)
+  environmental_package String? @db.VarChar(100)
+
+  // Depth/Elevation
+  depth_min_meters Decimal? @db.Decimal
+  depth_max_meters Decimal? @db.Decimal
+  elevation_meters Decimal? @db.Decimal
+
+  // Measurements
+  temperature                  Decimal? @db.Decimal
+  ph                           Decimal? @db.Decimal
+  salinity                     Decimal? @db.Decimal
+  salinity_unit                String?  @db.VarChar(20)
+  current_precipitation_mm     Decimal? @db.Decimal
+  mean_annual_precipitation_mm Decimal? @db.Decimal
+  mean_annual_temperature      Decimal? @db.Decimal
+
+  // Collection
+  collection_date     DateTime? @db.Date
+  collection_date_end DateTime? @db.Date
+  description         String?
+
+  // Host
+  host_taxid           Int?
+  host_scientific_name String?
+
+  // Identifiers
+  external_id String? @db.VarChar(255)
+  accession   String? @db.VarChar(255)
+
+  // Flexible
+  additional_metadata Json @default("{}")
+  validation_warnings Json @default("[]")
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([contribution_id, sample_alias], map: "unique_sample_per_contribution")
+  @@index([contribution_id], map: "idx_user_contribution_samples_contribution_id")
+  @@index([sample_alias], map: "idx_user_contribution_samples_sample_alias")
+  @@map("user_contribution_samples")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model sequence_search_results {
+  id                       String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  session_id               String                   @db.VarChar(100)
+  bgc_id                   String?                  @db.Uuid
+  bgc_filename             String?
+  target_id                String?
+  query_id                 String?
+  identity                 Decimal                  @db.Decimal(5, 2)
+  coverage                 Decimal                  @db.Decimal(5, 2)
+  e_value                  Float
+  bit_score                Decimal                  @db.Decimal(10, 2)
+  query_start              Int
+  query_end                Int
+  query_length             Int
+  target_start             Int
+  target_end               Int
+  target_length            Int
+  num_matches              Int
+  num_mismatches           Int?
+  num_gaps                 Int?
+  alignment_length         Int
+  query_aligned            String?
+  target_aligned           String?
+  alignment_string         String?
+  rank                     Int
+  created_at               DateTime                 @default(now()) @db.Timestamptz(6)
+  sequence_search_sessions sequence_search_sessions @relation(fields: [session_id], references: [session_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_seq_search_results_session")
+
+  // No relation to Bgc: there is no FK, so bgc_id is a plain parsed UUID that
+  // readers LEFT JOIN against bgcs. Declaring it here would reinstate the constraint on the
+  // next migrate and put back the per-search random-read pass it was dropped to avoid.
+  @@index([bgc_id], map: "idx_seq_search_results_bgc_id")
+  @@index([session_id, query_id, bgc_id], map: "idx_seq_search_results_session_group")
+  @@index([e_value], map: "idx_seq_search_results_e_value")
+  @@index([identity(sort: Desc)], map: "idx_seq_search_results_identity")
+  @@index([session_id, rank], map: "idx_seq_search_results_rank")
+  @@index([session_id], map: "idx_seq_search_results_session_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model sequence_search_sessions {
+  id                      String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  session_id              String                    @unique @db.VarChar(100)
+  input_sequence          String
+  sequence_hash           String                    @db.VarChar(64)
+  sequence_type           String                    @default("nucleotide") @db.VarChar(20)
+  algorithm               String                    @default("diamond") @db.VarChar(50)
+  e_value                 Float?                    @default(0.00001)
+  min_identity            Decimal?                  @default(30.0) @db.Decimal(5, 2)
+  min_coverage            Decimal?                  @default(50.0) @db.Decimal(5, 2)
+  max_results             Int?                      @default(1000)
+  job_id                  String?                   @db.VarChar(100)
+  status                  String                    @default("pending") @db.VarChar(20)
+  progress                Int?                      @default(0)
+  error_message           String?
+  total_hits              Int?                      @default(0)
+  search_duration_ms      Int?
+  ip_address              String?                   @db.Inet
+  user_agent              String?
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  started_at              DateTime?                 @db.Timestamptz(6)
+  completed_at            DateTime?                 @db.Timestamptz(6)
+  sequence_search_results sequence_search_results[]
+
+  @@index([created_at(sort: Desc)], map: "idx_seq_search_sessions_created_at")
+  @@index([sequence_hash], map: "idx_seq_search_sessions_hash")
+  @@index([job_id], map: "idx_seq_search_sessions_job_id")
+  @@index([session_id], map: "idx_seq_search_sessions_session_id")
+  @@index([status], map: "idx_seq_search_sessions_status")
+}
+
+/// This model contains database comments and tracks background jobs for exporting GCF GBK files as ZIP archives
+model GcfExportJob {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  job_id          String    @unique @db.VarChar(100)
+  /// 'gcf' (one family's primary members) or 'regions' (a property search's matches)
+  kind            String    @default("gcf") @db.VarChar(16)
+  /// Set exactly when kind = 'gcf'
+  gcf_id          String?   @db.Uuid
+  /// kind = 'regions': the {group, sort} exported, and the /search URL it came from
+  search_query    Json?
+  search_href     String?
+  status          String    @default("pending") @db.VarChar(20)
+  progress        Int?      @default(0)
+  total_bgcs      Int?
+  processed_bgcs  Int?      @default(0)
+  missing_files   Int?      @default(0)
+  output_filename String?   @db.VarChar(255)
+  output_path     String?
+  file_size_bytes BigInt?
+  started_at      DateTime? @db.Timestamptz(6)
+  completed_at    DateTime? @db.Timestamptz(6)
+  duration_ms     Int?
+  error_message   String?
+  user_email      String?   @db.VarChar(255)
+  user_ip         String?   @db.Inet
+  expires_at      DateTime? @db.Timestamptz(6)
+  is_deleted      Boolean?  @default(false)
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime? @default(now()) @db.Timestamptz(6)
+  gcf             Gcf?      @relation(fields: [gcf_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([gcf_id], map: "idx_gcf_export_jobs_gcf_id")
+  @@index([status], map: "idx_gcf_export_jobs_status")
+  @@index([job_id], map: "idx_gcf_export_jobs_job_id")
+  @@index([created_at(sort: Desc)], map: "idx_gcf_export_jobs_created_at")
+  @@index([expires_at], map: "idx_gcf_export_jobs_expires_at")
+  @@map("gcf_export_jobs")
+}
+
+/// This view or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+view loader_progress_summary {
+  loader_name           String?
+  run_id                String?   @db.Uuid
+  entity_type           String?
+  total_entities        BigInt?
+  completed             BigInt?
+  failed                BigInt?
+  in_progress           BigInt?
+  pending               BigInt?
+  run_started_at        DateTime? @db.Timestamptz(6)
+  last_updated_at       DateTime? @db.Timestamptz(6)
+  completion_percentage Decimal?  @db.Decimal
+}
+
+view bgcs_per_assembly {
+  assembly            String?   @db.Uuid
+  bgc_count           BigInt?
+  complete_bgc_count  BigInt?
+  clustered_bgc_count BigInt?
+  first_bgc_added     DateTime? @db.Timestamptz(6)
+  last_bgc_added      DateTime? @db.Timestamptz(6)
+}
+
+view bgcs_per_run {
+  run_id             String?   @db.Uuid
+  bgc_count          BigInt?
+  complete_bgc_count BigInt?
+  assembly_count     BigInt?
+  first_bgc_added    DateTime? @db.Timestamptz(6)
+  last_bgc_added     DateTime? @db.Timestamptz(6)
+}
+
+view bgc_biome_analysis_mapping {
+  bgc_id              String?  @db.Uuid
+  assembly            String?  @db.Uuid
+  biome_id            String?  @db.Uuid
+  biome_name          String?  @db.VarChar(200)
+  geographic_location String?
+  latitude            Decimal? @db.Decimal
+  longitude           Decimal? @db.Decimal
+}
+
+view gcf_summary {
+  gcf_id               String?  @db.Uuid
+  name                 String?  @db.VarChar(200)
+  cluster_method       String?  @db.VarChar(100)
+  similarity_threshold Decimal? @db.Decimal(5, 3)
+  member_bgc_count     BigInt?
+  assembly_count       BigInt?
+  avg_membership_score Float?
+  min_membership_score Float?
+  max_membership_score Float?
+}
+
+view product_category_distribution {
+  product_category String?
+  bgc_count        Int?
+  gcf_count        Int?
+  assembly_count   Int?
+}
+
+view sample_summary {
+  id                           String    @unique @db.Uuid
+  external_id                  String?
+  name                         String?
+  description                  String?
+  geographic_location          String?
+  geolocation_name             String?
+  location_resolution          String?
+  latitude                     Decimal?  @db.Decimal
+  longitude                    Decimal?  @db.Decimal
+  depth                        Decimal?  @db.Decimal(10, 3)
+  depth_min_meters             Decimal?  @db.Decimal
+  depth_max_meters             Decimal?  @db.Decimal
+  elevation_meters             Decimal?  @db.Decimal
+  temperature                  Decimal?  @db.Decimal
+  ph                           Decimal?  @db.Decimal
+  salinity                     Decimal?  @db.Decimal
+  salinity_unit                String?
+  current_precipitation_mm     Decimal?  @db.Decimal
+  mean_annual_precipitation_mm Decimal?  @db.Decimal
+  mean_annual_temperature      Decimal?  @db.Decimal
+  environmental_package        String?
+  environment_biome            String?
+  primary_biome                String?
+  environment_feature          String?
+  environment_material         String?
+  host_taxid                   Int?
+  host_scientific_name         String?
+  sample_alias                 String?
+  accession                    String?
+  data_source_ids              String[]  @db.Uuid
+  collection_date              DateTime? @db.Date
+  collection_date_end          DateTime? @db.Date
+  metadata                     Json?
+  gold_ecosystem_path          String?
+  gold_ecosystem_metadata      Json?
+  created_at                   DateTime? @db.Timestamptz(6)
+  updated_at                   DateTime? @db.Timestamptz(6)
+  assembly_count               Int?
+  bgc_count                    Int?
+  data_source_names            String[]
+  study_titles                 String[]
+  source_types                 String[]
+}
+
+view sample_map_view {
+  id                   String   @unique @db.Uuid
+  external_id          String?
+  name                 String?
+  geographic_location  String?
+  geolocation_name     String?
+  latitude             Decimal? @db.Decimal
+  longitude            Decimal? @db.Decimal
+  environment_biome    String?
+  primary_biome        String?
+  environment_feature  String?
+  environment_material String?
+  host_scientific_name String?
+  gold_ecosystem_path  String?
+  data_source_names    String[]
+  study_titles         String[]
+  assembly_count       Int?
+  bgc_count            Int?
+  source_types         String[]
+}
+
+view bgc_biome_summary_mv {
+  bgc_id                 String  @unique @db.Uuid
+  sample_id              String? @db.Uuid
+  biome_level_1          String?
+  biome_level_2          String?
+  biome_level_3          String?
+  biome_level_4          String?
+  environment_biome      String?
+  environment_feature    String?
+  environment_material   String?
+  resolved_biome_level_1 String?
+  resolved_biome_level_2 String?
+  resolved_biome_level_3 String?
+  resolved_biome_level_4 String?
+}
+
+view gcf_summary_mv {
+  gcf_id                    String    @unique @db.Uuid
+  gcf_name                  String?   @db.VarChar(200)
+  cluster_method            String?   @db.VarChar(100)
+  similarity_threshold      Decimal?  @db.Decimal(5, 3)
+  representative_bgc_id     String?   @db.Uuid
+  description               String?
+  gcf_created_at            DateTime? @db.Timestamptz(6)
+  gcf_updated_at            DateTime? @db.Timestamptz(6)
+  member_bgc_count          BigInt?
+  assembly_count            BigInt?
+  complete_bgc_count        BigInt?
+  partial_bgc_count         BigInt?
+  avg_membership_score      Float?
+  min_membership_score      Float?
+  max_membership_score      Float?
+  median_membership_score   Float?
+  unique_product_categories BigInt?
+  product_categories        String[]
+  unique_taxa_count         BigInt?
+  direct_assignments        BigInt?
+  carried_assignments       BigInt?
+  first_bgc_added           DateTime? @db.Timestamptz(6)
+  last_bgc_added            DateTime? @db.Timestamptz(6)
+}
+
+view gcf_distributions_mv {
+  gcf_id                        String   @unique @db.Uuid
+  biome_distribution_l1         Json
+  biome_distribution_l2         Json
+  biome_distribution_l3         Json
+  biome_distribution_l4         Json
+  biome_distribution_l5         Json
+  max_pct_l1                    Decimal? @db.Decimal
+  max_pct_l2                    Decimal? @db.Decimal
+  max_pct_l3                    Decimal? @db.Decimal
+  max_pct_l4                    Decimal? @db.Decimal
+  max_pct_l5                    Decimal? @db.Decimal
+  product_category_distribution Json
+}
+
+enum AntiSmashRunStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+
+  @@map("antismash_run_status")
+}

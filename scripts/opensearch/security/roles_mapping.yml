@@ -1,0 +1,19 @@
+_meta:
+  type: "rolesmapping"
+  config_version: 2
+
+# Only the setup account holds full access; the demo mappings are not carried over.
+all_access:
+  reserved: false
+  users:
+    - "admin"
+
+bgc_reader:
+  reserved: false
+  users:
+    - "bgc_reader"
+
+bgc_indexer:
+  reserved: false
+  users:
+    - "bgc_indexer"

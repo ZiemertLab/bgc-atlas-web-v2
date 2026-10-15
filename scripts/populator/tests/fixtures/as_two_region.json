@@ -1,0 +1,33 @@
+{
+  "version": "0.1.2",
+  "taxon": "bacteria",
+  "records": [
+    {
+      "id": "contigA",
+      "areas": [
+        {"start": 0, "end": 5000, "products": ["NRPS"],
+         "protoclusters": {"0": {"category": "NRPS", "core_start": 100, "core_end": 4000, "product": "NRPS"}}},
+        {"start": 8000, "end": 12000, "products": ["T1PKS"],
+         "protoclusters": {"0": {"category": "PKS", "core_start": 8200, "core_end": 11000, "product": "T1PKS"}}}
+      ],
+      "features": [
+        {"type": "region", "location": "[0:5000](+)", "qualifiers": {"region_number": ["1"], "contig_edge": ["True"]}},
+        {"type": "region", "location": "[8000:12000](+)", "qualifiers": {"region_number": ["2"], "contig_edge": ["False"]}},
+        {"type": "CDS", "location": "[100:900](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[8200:9000](+)", "qualifiers": {}},
+        {"type": "CDS", "location": "[9100:10000](+)", "qualifiers": {}}
+      ]
+    },
+    {
+      "id": "contigB",
+      "areas": [
+        {"start": 200, "end": 3200, "products": ["terpene"],
+         "protoclusters": {"0": {"category": "terpene", "core_start": 500, "core_end": 2800, "product": "terpene"}}}
+      ],
+      "features": [
+        {"type": "region", "location": "[200:3200](+)", "qualifiers": {"region_number": ["1"], "contig_edge": ["False"]}},
+        {"type": "CDS", "location": "[500:1200](+)", "qualifiers": {}}
+      ]
+    }
+  ]
+}

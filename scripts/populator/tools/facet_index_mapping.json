@@ -1,0 +1,287 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "30s"
+    },
+    "index.mapping.total_fields.limit": 2000
+  },
+  "mappings": {
+    "properties": {
+      "sample_type": {
+        "type": "keyword"
+      },
+      "sample_name": {
+        "type": "keyword"
+      },
+      "biome": {
+        "type": "keyword"
+      },
+      "env_feature": {
+        "type": "keyword"
+      },
+      "env_material": {
+        "type": "keyword"
+      },
+      "env_package": {
+        "type": "keyword"
+      },
+      "host": {
+        "type": "keyword"
+      },
+      "geolocation": {
+        "type": "keyword"
+      },
+      "gold_ecosystem": {
+        "type": "keyword"
+      },
+      "latitude": {
+        "type": "float"
+      },
+      "longitude": {
+        "type": "float"
+      },
+      "collection_year": {
+        "type": "integer"
+      },
+      "contig": {
+        "type": "keyword"
+      },
+      "start": {
+        "type": "long"
+      },
+      "end": {
+        "type": "long"
+      },
+      "region_number": {
+        "type": "integer"
+      },
+      "product_type": {
+        "type": "keyword"
+      },
+      "product_category": {
+        "type": "keyword"
+      },
+      "is_complete": {
+        "type": "boolean"
+      },
+      "gc_content": {
+        "type": "float"
+      },
+      "candidate_kind": {
+        "type": "keyword"
+      },
+      "num_protoclusters": {
+        "type": "integer"
+      },
+      "detection_rules": {
+        "type": "keyword"
+      },
+      "pfam": {
+        "type": "keyword"
+      },
+      "tigrfam": {
+        "type": "keyword"
+      },
+      "smcog": {
+        "type": "keyword"
+      },
+      "antismash_domains": {
+        "type": "keyword"
+      },
+      "go_terms": {
+        "type": "keyword"
+      },
+      "tta_codons": {
+        "type": "integer"
+      },
+      "substrates": {
+        "type": "keyword"
+      },
+      "monomers": {
+        "type": "keyword"
+      },
+      "stachelhaus_codes": {
+        "type": "keyword"
+      },
+      "at_specificity": {
+        "type": "keyword"
+      },
+      "kr_stereochemistry": {
+        "type": "keyword"
+      },
+      "module_signatures": {
+        "type": "keyword"
+      },
+      "num_modules": {
+        "type": "integer"
+      },
+      "predicted_smiles": {
+        "type": "wildcard"
+      },
+      "monomer_consensus": {
+        "type": "wildcard"
+      },
+      "pks_trans_at": {
+        "type": "boolean"
+      },
+      "terpene_products": {
+        "type": "keyword"
+      },
+      "terpene_domains": {
+        "type": "keyword"
+      },
+      "pks_t2_class": {
+        "type": "keyword"
+      },
+      "pks_t2_starter": {
+        "type": "keyword"
+      },
+      "pks_t2_elongation": {
+        "type": "keyword"
+      },
+      "ripp_class": {
+        "type": "keyword"
+      },
+      "ripp_subclass": {
+        "type": "keyword"
+      },
+      "core_seq": {
+        "type": "wildcard"
+      },
+      "leader_seq": {
+        "type": "wildcard"
+      },
+      "ripp_mass": {
+        "type": "float"
+      },
+      "rodeo_score": {
+        "type": "integer"
+      },
+      "ripp_modifications": {
+        "type": "keyword"
+      },
+      "ripp_cut_mass": {
+        "type": "float"
+      },
+      "ripp_cut_weight": {
+        "type": "float"
+      },
+      "ripp_mature_weight": {
+        "type": "float"
+      },
+      "ripp_num_bridges": {
+        "type": "integer"
+      },
+      "ripp_macrolactam": {
+        "type": "wildcard"
+      },
+      "comparippson_hits": {
+        "type": "keyword"
+      },
+      "knowncluster_hits": {
+        "type": "keyword"
+      },
+      "knowncluster_compounds": {
+        "type": "keyword"
+      },
+      "knowncluster_top": {
+        "type": "keyword"
+      },
+      "knowncluster_top_compound": {
+        "type": "keyword"
+      },
+      "knowncluster_top_similarity": {
+        "type": "integer"
+      },
+      "num_knowncluster_hits": {
+        "type": "integer"
+      },
+      "clusterblast_hits": {
+        "type": "keyword"
+      },
+      "subcluster_hits": {
+        "type": "keyword"
+      },
+      "mibig_comparison_top": {
+        "type": "keyword"
+      },
+      "mibig_comparison_top_score": {
+        "type": "float"
+      },
+      "tfbs_regulators": {
+        "type": "keyword"
+      },
+      "bgc_id": {
+        "type": "keyword"
+      },
+      "filename": {
+        "type": "keyword"
+      },
+      "length": {
+        "type": "long"
+      },
+      "num_cds_features": {
+        "type": "integer"
+      },
+      "gcf_id": {
+        "type": "keyword"
+      },
+      "distance": {
+        "type": "float"
+      },
+      "tax_domain": {
+        "type": "keyword"
+      },
+      "tax_phylum": {
+        "type": "keyword"
+      },
+      "tax_class": {
+        "type": "keyword"
+      },
+      "tax_order": {
+        "type": "keyword"
+      },
+      "tax_family": {
+        "type": "keyword"
+      },
+      "tax_genus": {
+        "type": "keyword"
+      },
+      "tax_species": {
+        "type": "keyword"
+      },
+      "data_source": {
+        "type": "keyword"
+      },
+      "n_core_biosynthetic": {
+        "type": "integer"
+      },
+      "n_additional_biosynthetic": {
+        "type": "integer"
+      },
+      "n_transport": {
+        "type": "integer"
+      },
+      "n_regulatory": {
+        "type": "integer"
+      },
+      "n_resistance": {
+        "type": "integer"
+      },
+      "pfam_desc": {
+        "type": "keyword"
+      },
+      "tigrfam_desc": {
+        "type": "keyword"
+      },
+      "smcog_desc": {
+        "type": "keyword"
+      },
+      "sample_id": {
+        "type": "keyword"
+      }
+    }
+  }
+}

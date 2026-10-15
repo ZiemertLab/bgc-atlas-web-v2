@@ -1,0 +1,7 @@
+study_code	sample_alias	spire_sample_name	longitude	latitude	geographic_location	location_resolution	collection_date	collection_date_end	tax_id	environment_material	environment_biome	environment_feature	environmental_package	elevation_meters	depth_meters	pH	current_temperature	current_precipitation_mm	mean_annual_precipitation_mm	mean_annual_temperature	pmid	doi
+StudyA	StudyA.sampleX	SAMN_X	-88.11	30.25	USA	exact_location	2016-01-01		410658	water	aquatic biome [ENVO:00002030]	feat	MIxS	10	5.5	7.2	18.0			15.0	123	10.1/x
+StudyB	StudyB.mgs1	5O_Y1.1	-116.37	33.65	USA	exact_location	2015-09-07		410658	soil	terrestrial biome [ENVO:00000446]	feat2	MIxS		0							
+StudyB	StudyB.mgs2	5O_Y1.1	-116.37	33.65	USA	exact_location	2015-09-07		410658	soil	terrestrial biome [ENVO:00000446]	feat2	MIxS		0							
+StudyC	StudyC.rangeDepth	SPIRE_RANGE	-10.0	40.0	Ocean	region	2018-05-01		200000	water	marine biome	feat	MIxS		0-0.2	approx 8						
+StudyD	StudyD.a	DIVERGE	1.0	1.0	LocA	region	2019-01-01		300000	soil	biome A	f	MIxS	10	5							
+StudyD	StudyD.b	DIVERGE	2.0	2.0	LocB	region	2019-01-01		300000	soil	biome B	f	MIxS	20	7							

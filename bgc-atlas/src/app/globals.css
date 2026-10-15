@@ -1,0 +1,263 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../styles/map.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-8: var(--chart-8);
+  --color-chart-7: var(--chart-7);
+  --color-chart-6: var(--chart-6);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-on-primary: var(--destructive-on-primary);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --animate-indeterminate-bar: indeterminate-bar 1.4s ease-in-out infinite;
+}
+
+:root {
+  --radius: 0.125rem;
+
+  --background: oklch(0.995 0.003 90);
+  --foreground: oklch(0.18 0 0);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0 0);
+
+  --primary: oklch(0.18 0 0);
+  --primary-foreground: oklch(0.99 0.005 90);
+
+  --secondary: oklch(0.95 0.005 90);
+  --secondary-foreground: oklch(0.18 0 0);
+  --muted: oklch(0.95 0.005 90);
+  --muted-foreground: oklch(0.45 0 0);
+  /* Hover/focus surface; darker than muted so interactive states read clearly. */
+  --accent: oklch(0.90 0.006 90);
+  --accent-foreground: oklch(0.18 0 0);
+
+  --destructive: oklch(0.50 0.18 25);
+  /* Without this, text-destructive-foreground resolved to nothing (2.83:1 on red). */
+  --destructive-foreground: oklch(0.99 0.01 25);
+  /* --destructive on the near-black --primary surface (tooltips): the card red is
+     2.85:1 there, below the 4.5:1 small text needs. Same hue and chroma, lightened
+     to 5.56:1. */
+  --destructive-on-primary: oklch(0.66 0.18 25);
+
+  /* Status colours, distinct hues so healthy/degraded/failed survive a glance.
+     Tuned to --destructive's contrast band: AA at body size as text and as fills. */
+  --success: oklch(0.48 0.13 150);
+  --success-foreground: oklch(0.99 0.01 150);
+  --warning: oklch(0.52 0.12 70);
+  --warning-foreground: oklch(0.99 0.01 70);
+
+  /* University of Tübingen carmine (#A51E37); ~6:1 on white. */
+  --brand: oklch(0.45 0.16 17);
+  --brand-foreground: oklch(0.99 0.01 17);
+
+  --border: oklch(0.86 0.003 90);
+  --input: oklch(0.82 0.003 90);
+  --ring: var(--brand);
+
+  /* Okabe-Ito categorical palette (colourblind-safe); data visualisation only. */
+  --chart-1: #e69f00;
+  --chart-2: #56b4e9;
+  --chart-3: #009e73;
+  --chart-4: #f0e442;
+  --chart-5: #0072b2;
+  --chart-6: #d55e00;
+  --chart-7: #cc79a7;
+  --chart-8: #000000;
+
+  --sidebar: oklch(0.995 0.003 90);
+  --sidebar-foreground: oklch(0.18 0 0);
+  --sidebar-primary: oklch(0.18 0 0);
+  --sidebar-primary-foreground: oklch(0.99 0.005 90);
+  --sidebar-accent: oklch(0.95 0.005 90);
+  --sidebar-accent-foreground: oklch(0.18 0 0);
+  --sidebar-border: oklch(0.88 0.003 90);
+  --sidebar-ring: oklch(0.55 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "kern", "liga", "calt";
+    /* Absorbs the scrollbar-width overhang of .full-bleed sections; `clip`, unlike
+       `hidden`, keeps sticky positioning working. */
+    overflow-x: clip;
+  }
+
+  /* d3-axis stamps font-family="sans-serif" on axis groups; CSS outranks SVG
+     presentation attributes, so this restores the page font. */
+  svg [font-family="sans-serif"] {
+    font-family: var(--font-sans);
+  }
+
+  .tabular,
+  table,
+  th,
+  td,
+  [data-slot="table-cell"],
+  [data-slot="table-head"] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .font-mono,
+  code,
+  pre,
+  kbd,
+  samp {
+    font-feature-settings: "kern", "calt", "zero";
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  .italic-binomial em,
+  .italic-binomial i {
+    font-style: italic;
+  }
+}
+
+@layer components {
+  .section-label {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+
+  .section-rule {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+  }
+
+  .atlas-rule {
+    position: relative;
+    padding-bottom: 0.75rem;
+  }
+  .atlas-rule::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 3px 0 -2px var(--border);
+  }
+
+  .leader-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .leader-row > .leader-dots {
+    flex: 1 1 auto;
+    overflow: hidden;
+    border-bottom: 1px dotted var(--border);
+    transform: translateY(-0.25em);
+    min-width: 1ch;
+  }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.animate-shimmer { animation: shimmer 2s infinite; }
+
+/* The animation is registered in @theme inline as --animate-indeterminate-bar so
+   Tailwind v4 generates the `.animate-indeterminate-bar` utility. */
+@keyframes indeterminate-bar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(420%); }
+}
+
+/* Firefox uses scrollbar-width/color; WebKit/Blink the ::-webkit-scrollbar pseudo-elements. */
+.fancy-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 30%, transparent) transparent;
+}
+
+.fancy-scrollbar::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+.fancy-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fancy-scrollbar::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted-foreground) 28%, transparent);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.15s ease;
+}
+
+.fancy-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+
+.fancy-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+}
+
+.fancy-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+

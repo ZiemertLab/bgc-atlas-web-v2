@@ -1,0 +1,33 @@
+BGC Atlas
+
+This product includes word lists from petname
+(https://github.com/dustinkirkland/petname), used unmodified.
+
+  Copyright 2014-2023 Dustin Kirkland <dustin.kirkland@gmail.com>
+  Licensed under the Apache License, Version 2.0.
+
+The word lists and their license text are not committed to this repository;
+THIRD_PARTY.md says where to get them (bgc-atlas/src/lib/wordlists/petname/).
+
+---
+
+Study metadata
+
+Study titles, descriptions and accessions are derived from the European
+Nucleotide Archive and MGnify, operated by EMBL-EBI. EMBL-EBI places no
+restrictions on redistribution beyond those of the original data owners and
+asks for attribution as good scientific practice.
+
+  https://www.ebi.ac.uk/about/terms-of-use/
+
+Bibliographic metadata (titles, DOIs, publishers, licence URLs) comes from
+Crossref, which places its metadata in the public domain.
+
+Study abstracts taken from publications are reproduced only where the work
+carries a Creative Commons licence, and are shown with the publisher, the
+licence and the DOI. Abstracts are the one part of Crossref's metadata that
+Crossref does not place in the public domain -- they remain subject to
+publisher or author copyright -- so abstracts under all-rights-reserved,
+text-and-data-mining-only or unstated terms are neither displayed nor stored,
+and are absent from the database snapshots distributed from the downloads page
+(see new-schema/migrations/0083_drop_non_redistributable_abstracts.sql).

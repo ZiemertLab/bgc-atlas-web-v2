@@ -1,0 +1,9 @@
+sample_id	external_id	key	value
+u1	RS_GCF_000001.1	checkm_completeness	99.4
+u1	RS_GCF_000001.1	ncbi_isolation_source	none
+u1	RS_GCF_000001.1	ncbi_biosample	SAMN00000001
+u2	GB_GCA_000002.1	genome_size	5000000
+u2	GB_GCA_000002.1	gc_percentage	
+u2	GB_GCA_000002.1	gtdb_taxonomy	d__Bacteria;p__Bacillota
+u3	RS_GCF_000003.1	ncbi_isolation_source	None
+u3	RS_GCF_000003.1	ncbi_submitter	none

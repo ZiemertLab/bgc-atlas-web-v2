@@ -1,0 +1,17 @@
+{
+  "type": "analysis-jobs",
+  "id": "MGYA9",
+  "attributes": {
+    "accession": "MGYA9",
+    "pipeline-version": "5.0"
+  },
+  "relationships": {
+    "taxonomy-lsu": {"data": null},
+    "study": {"data": {"type": "studies", "id": "MGYS1"}},
+    "run": {"data": null},
+    "sample": {"data": {"type": "samples", "id": "ERS1"}},
+    "assembly": {"data": {"type": "assemblies", "id": "ERZ1"}},
+    "downloads": {"data": null}
+  },
+  "links": {"self": "https://www.ebi.ac.uk/metagenomics/api/v1/analyses/MGYA9"}
+}

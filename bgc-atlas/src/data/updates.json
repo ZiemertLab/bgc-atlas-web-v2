@@ -1,0 +1,117 @@
+[
+    {
+        "date": "2026-10-14",
+        "title": "Gene cluster families corrected",
+        "description": "The families were recomputed on the same BGCs with a corrected containment step (data release R2.0-beta.6): a BGC now joins a family by sequence containment only when 80% of its whole length matches a member, where before 80% of one 10 kb piece was enough. 629,872 listed families, 89.4% of BGCs in one. Family names carry the new tag (GCF-v2b6-000042). Names of the 13 October families (GCF-v2b5-…) no longer resolve; links to earlier families still show where their members went.",
+        "type": "major"
+    },
+    {
+        "date": "2026-10-13",
+        "title": "New data and recomputed gene cluster families",
+        "description": "124,176 BGCs added: 66,549 from 173 metalog samples, and two long-read sets, Great Barrier Reef seawater (38,505) and the Helgoland 2020 spring bloom (19,122). The families were recomputed on all of them (data release R2.0-beta.5): 618,695 listed families, 88.4% of BGCs in one. Family names carry the new tag (GCF-v2b5-000042); a link to a family of an earlier clustering shows where its members went.",
+        "type": "major"
+    },
+    {
+        "date": "2026-10-12",
+        "title": "Gene cluster families recomputed",
+        "description": "The families were recomputed on the current corpus (data release R2.0-beta.4): 614,268 listed families, 88.4% of BGCs in one. Family names carry the new tag (GCF-v2b4-000042); a link to a family of either previous clustering shows where its members went.",
+        "type": "major"
+    },
+    {
+        "date": "2026-10-10",
+        "title": "Gene cluster families recomputed",
+        "description": "The families were recomputed on the current corpus (data release R2.0-beta.2): 614,215 listed families, 88.4% of BGCs in one, including the 8,490 GTDB BGCs added on 9 October. Family names now carry the release their clustering first shipped in (GCF-v2b2-000042); a link to a family of the previous clustering shows which current families its members are in.",
+        "type": "major"
+    },
+    {
+        "date": "2026-08-09",
+        "title": "Taxonomy for nearly every BGC",
+        "description": "Taxonomy is now assigned per BGC rather than inherited per sample, lifting coverage from 71% to 99.4% of the 16.5M BGCs (82% resolved to genus or better), with GTDB refreshed to release 232. It flows through the BGC, GCF and sample tables, the metadata filters, GCF taxonomy distributions, and sequence-search results.",
+        "type": "major"
+    },
+    {
+        "date": "2026-08-07",
+        "title": "Sequence search: GenBank queries and alignments",
+        "description": "Upload a whole GenBank record, not just proteins: hits are grouped per BGC on a paginated table sortable by how many query genes matched, with BLAST-style pairwise alignments, a contig map showing where each BGC's genes align on your query, a map of where the hits come from, and live progress while the search runs.",
+        "type": "update"
+    },
+    {
+        "date": "2026-08-07",
+        "title": "Property Search refinements",
+        "description": "Matched BGCs can now be viewed on a map with a colour-by dropdown, distribution buckets link straight to the page they name, RiPP annotations are split into typed fields you can filter individually, the GCF filter accepts family names, and NRPS module signatures and Stachelhaus codes support substring matching.",
+        "type": "update"
+    },
+    {
+        "date": "2026-07-31",
+        "title": "Sequence search rebuilt",
+        "description": "The DIAMOND protein index now covers the full Atlas (16.5M BGCs, 170M proteins) instead of a June snapshot that was missing a quarter of it. Hits are grouped by BGC and link to their Atlas pages with product type, sample, source, GCF and taxonomy, and nucleotide queries are now accepted via blastx.",
+        "type": "major"
+    },
+    {
+        "date": "2026-07-08",
+        "title": "Atlas-wide environmental enrichment",
+        "description": "GOLD ecosystem classification, geographic coordinates, and ENVO biome/feature/material terms now cover ~94% of 860k+ samples, spanning GEM, SPIRE, SMAG, TPMC, OMD, GTDB, MGnify, Microflora Danica, and more.",
+        "type": "update"
+    },
+    {
+        "date": "2026-07-07",
+        "title": "BGC Property Search",
+        "description": "A new query builder to search all ~16.5M BGCs by their antiSMASH properties — product type, biosynthetic genes, domains, taxonomy, and ecosystem — with live result-distribution charts.",
+        "type": "major"
+    },
+    {
+        "date": "2026-07-06",
+        "title": "Cluster Viewer",
+        "description": "Explore any BGC in an embedded, interactive antiSMASH cluster viewer, with one-click \"Open in antiSMASH\" links that jump straight to the matching region.",
+        "type": "update"
+    },
+    {
+        "date": "2026-07-05",
+        "title": "MGnify datasets updated",
+        "description": "1.76M new BGCs from newly processed MGnify metagenomes — the Atlas now holds ~16.5M BGCs.",
+        "type": "update"
+    },
+    {
+        "date": "2026-06-30",
+        "title": "Genome collections & MAG catalogs",
+        "description": "A new Genome Collections browser plus 7 MAG catalogs (+541k genomes, +2.1M BGCs), with taxonomy, genome-type, and GOLD-ecosystem breakdowns.",
+        "type": "update"
+    },
+    {
+        "date": "2026-06-26",
+        "title": "Sequence & clustering search",
+        "description": "Search the Atlas by protein sequence (DIAMOND) or upload a GenBank file to find related gene cluster families (BiG-SLiCE).",
+        "type": "update"
+    },
+    {
+        "date": "2026-01-05",
+        "title": "Analyses section",
+        "description": "New Analyses pages: biome specificity, ecosystem specificity, and an interactive GCF co-occurrence network.",
+        "type": "update"
+    },
+    {
+        "date": "2025-09-03",
+        "title": "Environmental Datasets from SPIRE added",
+        "description": "Added 14K new datasets from environmental sources from the SPIRE database.",
+        "type": "update"
+    },
+    {
+        "date": "2025-08-28",
+        "title": "Performance improvements",
+        "description": "",
+        "type": "update"
+    },
+    {
+        "date": "2025-08-15",
+        "title": "antiSMASH 8",
+        "description": "BGC Atlas now uses antiSMASH 8. All datasets were updated. New datasets in MGnify were also processed.",
+        "type": "update"
+    },
+    {
+        "date": "2024-08-15",
+        "version": "v1.0.0",
+        "title": "Initial Release",
+        "description": "Initial release of BGC Atlas with comprehensive metagenomic BGC database, interactive web interface, and advanced search capabilities.",
+        "type": "major"
+    }
+]

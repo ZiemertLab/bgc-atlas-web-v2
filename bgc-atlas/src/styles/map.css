@@ -1,0 +1,284 @@
+.custom-map-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.custom-cluster-icon {
+  background: transparent !important;
+  border: none !important;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.custom-cluster-icon:hover {
+  transform: scale(1.15);
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25));
+  z-index: 1000 !important;
+}
+
+.cluster-icon-svg {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+}
+
+.custom-sample-marker {
+  background: transparent !important;
+  border: none !important;
+  cursor: pointer;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.custom-sample-marker:hover {
+  transform: scale(1.2) translateY(-2px);
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+  z-index: 999 !important;
+}
+
+.custom-marker-svg {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+.custom-pin-cluster {
+  background: transparent !important;
+  transition: transform 0.2s ease !important;
+}
+
+.custom-pin-cluster:hover {
+  transform: scale(1.1) !important;
+  z-index: 1000 !important;
+}
+
+.sample-popup-content {
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 12px !important;
+  padding: 16px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+}
+
+.leaflet-popup-tip {
+  background: var(--background) !important;
+  border: 1px solid var(--border) !important;
+  border-top: none !important;
+  border-right: none !important;
+}
+
+.leaflet-popup-close-button {
+  color: var(--muted-foreground) !important;
+  font-size: 20px !important;
+  padding: 8px !important;
+  transition: color 0.2s ease !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: var(--foreground) !important;
+  background: var(--muted) !important;
+  border-radius: 4px !important;
+}
+
+.sample-popup .leaflet-popup-content-wrapper {
+  border-radius: 8px;
+  padding: 0;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border);
+}
+
+.sample-popup .leaflet-popup-content {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.sample-popup .leaflet-popup-tip {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-right: none;
+}
+
+@media (max-width: 768px) {
+  .custom-map-marker {
+    transform: scale(0.8);
+  }
+  
+  .cluster-pin {
+    transform: scale(0.85);
+  }
+  
+  .cluster-count {
+    font-size: 11px !important;
+  }
+  
+  .cluster-small .cluster-count {
+    font-size: 11px !important;
+  }
+  
+  .cluster-medium .cluster-count {
+    font-size: 12px !important;
+  }
+  
+  .cluster-large .cluster-count {
+    font-size: 13px !important;
+  }
+  
+  .cluster-huge .cluster-count {
+    font-size: 14px !important;
+  }
+  
+  .cluster-massive .cluster-count {
+    font-size: 15px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .cluster-pin {
+    transform: scale(0.75);
+  }
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.leaflet-tooltip.cluster-tooltip-container {
+  background: #1f2937 !important;
+  background-color: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  padding: 0 !important;
+  opacity: 1 !important;
+  color: #f9fafb !important;
+}
+
+.leaflet-tooltip.cluster-tooltip-container::before {
+  border-top-color: #1f2937 !important;
+}
+
+.leaflet-tooltip.cluster-tooltip-container .leaflet-tooltip-left::before {
+  border-left-color: #1f2937 !important;
+}
+
+.leaflet-tooltip.cluster-tooltip-container .leaflet-tooltip-right::before {
+  border-right-color: #1f2937 !important;
+}
+
+.leaflet-tooltip.cluster-tooltip-container .leaflet-tooltip-top::before {
+  border-top-color: #1f2937 !important;
+}
+
+.cluster-tooltip {
+  padding: 12px !important;
+  min-width: 180px !important;
+  background: #1f2937 !important;
+  background-color: #1f2937 !important;
+  color: #f9fafb !important;
+}
+
+.cluster-tooltip .text-foreground,
+.cluster-tooltip .text-muted-foreground {
+  color: #f9fafb !important;
+}
+
+.cluster-tooltip .text-muted-foreground {
+  color: #d1d5db !important;
+}
+
+@media (max-width: 640px) {
+  .cluster-tooltip-container {
+    display: none !important;
+  }
+}
+
+.leaflet-container {
+  transition: background-color 0.3s ease;
+}
+
+/* Leaflet writes the area-select colour as SVG attributes; CSS outranks those. */
+.map-area-selection {
+  stroke: var(--brand);
+  fill: var(--brand);
+}
+
+.leaflet-tile-container {
+  transition: opacity 0.3s ease;
+}
+
+.leaflet-tile {
+  opacity: 0;
+  animation: tile-fade-in 0.3s ease forwards;
+}
+
+@keyframes tile-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+
+/* Bare zoom and scale controls are a design decision; don't add fills or borders. */
+.leaflet-control-zoom a {
+  background: transparent !important;
+  color: inherit !important;
+  border: none !important;
+  transition: all 0.2s ease !important;
+}
+
+.leaflet-control-scale {
+  background: transparent !important;
+  backdrop-filter: blur(4px);
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  color: inherit !important;
+  font-size: 11px !important;
+}
+
+@media (max-width: 640px) {
+  .custom-cluster-icon svg {
+    transform: scale(0.85);
+  }
+
+  .custom-sample-marker svg {
+    transform: scale(0.8);
+  }
+}
+
+/* Tokens are oklch(), so they are used directly, not wrapped in hsl(). */
+.leaflet-tooltip.geo-cell-tooltip {
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px -8px rgb(0 0 0 / 0.35);
+  padding: 8px 10px;
+  opacity: 1;
+  font-size: 12px;
+}
+
+.leaflet-tooltip.geo-cell-tooltip.leaflet-tooltip-top::before { border-top-color: var(--popover); }
+.leaflet-tooltip.geo-cell-tooltip.leaflet-tooltip-bottom::before { border-bottom-color: var(--popover); }
+.leaflet-tooltip.geo-cell-tooltip.leaflet-tooltip-left::before { border-left-color: var(--popover); }
+.leaflet-tooltip.geo-cell-tooltip.leaflet-tooltip-right::before { border-right-color: var(--popover); }
+
+.geo-cell-popup .leaflet-popup-content-wrapper {
+  background: var(--popover) !important;
+  color: var(--popover-foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  padding: 12px !important;
+}
+
+.geo-cell-popup .leaflet-popup-tip {
+  background: var(--popover) !important;
+  border-color: var(--border) !important;
+}
+
+.geo-cell-popup a { color: var(--primary); }

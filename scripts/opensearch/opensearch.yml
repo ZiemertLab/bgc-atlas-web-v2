@@ -1,0 +1,30 @@
+# Single-node OpenSearch for the BGC Atlas indexes, with the security plugin on.
+# Mounted over /usr/share/opensearch/config/opensearch.yml by run.sh; the
+# certificates come from make_certs.sh, mounted at config/certs/.
+cluster.name: bgc-atlas
+network.host: 0.0.0.0
+
+# TLS between nodes (required by the plugin even on one node) and on the REST API.
+plugins.security.ssl.transport.pemcert_filepath: certs/node.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/node-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: false
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/node.pem
+plugins.security.ssl.http.pemkey_filepath: certs/node-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+
+# The node and the admin certificate, as issued by make_certs.sh.
+plugins.security.nodes_dn:
+  - "CN=bgc-opensearch,OU=bgc-atlas"
+plugins.security.authcz.admin_dn:
+  - "CN=bgc-admin,OU=bgc-atlas"
+
+# On first start, build the security index from the mounted roles, role
+# mappings and users. Later changes go through the REST API or securityadmin.sh.
+plugins.security.allow_default_init_securityindex: true
+plugins.security.restapi.roles_enabled: ["all_access"]
+plugins.security.system_indices.enabled: true
+
+# No audit log: the default sink is unconfigured here and only produces errors.
+plugins.security.audit.type: noop

@@ -1,0 +1,42 @@
+<?xml version="1.0" ?>
+<BioSampleSet>
+  <BioSample access="public" id="33940546" accession="SAMN33940546">
+    <Ids><Id db="BioSample" is_primary="1">SAMN33940546</Id></Ids>
+    <Attributes>
+      <Attribute attribute_name="isolation_source" harmonized_name="isolation_source" display_name="isolation source">soil</Attribute>
+      <Attribute attribute_name="collection_date" harmonized_name="collection_date" display_name="collection date">1996-09-12</Attribute>
+      <Attribute attribute_name="geo_loc_name" harmonized_name="geo_loc_name" display_name="geographic location">USA</Attribute>
+    </Attributes>
+    <Links><Link type="entrez" target="bioproject" label="PRJNA544527">544527</Link></Links>
+  </BioSample>
+  <BioSample access="public" id="2" accession="SAMN00000002">
+    <Ids><Id db="BioSample" is_primary="1">SAMN00000002</Id></Ids>
+    <Attributes>
+      <Attribute attribute_name="lat-lon" harmonized_name="lat_lon">12.3 S 45.6 W</Attribute>
+      <Attribute attribute_name="broad-scale" harmonized_name="env_broad_scale">marine biome</Attribute>
+      <Attribute attribute_name="local-scale" harmonized_name="env_local_scale">coastal water</Attribute>
+      <Attribute attribute_name="medium" harmonized_name="env_medium">sea water</Attribute>
+      <Attribute attribute_name="host" harmonized_name="host">Homo sapiens</Attribute>
+      <Attribute attribute_name="depth" harmonized_name="depth">10 m</Attribute>
+      <Attribute attribute_name="collection date" harmonized_name="collection_date">2010</Attribute>
+    </Attributes>
+    <Links>
+      <Link type="entrez" target="bioproject" label="PRJNA224116">224116</Link>
+      <Link type="entrez" target="bioproject" label="PRJNA999999">999999</Link>
+    </Links>
+  </BioSample>
+  <BioSample access="public" id="3" accession="SAMN00000003">
+    <Ids><Id db="BioSample" is_primary="1">SAMN00000003</Id></Ids>
+    <Attributes>
+      <Attribute attribute_name="geo_loc_name" harmonized_name="geo_loc_name">missing</Attribute>
+      <Attribute attribute_name="depth" harmonized_name="depth">0-5 m</Attribute>
+    </Attributes>
+  </BioSample>
+  <BioSample access="public" id="4" accession="SAMN00000004">
+    <Ids><Id db="BioSample" is_primary="1">SAMN00000004</Id></Ids>
+    <Attributes>
+      <Attribute attribute_name="strain" harmonized_name="strain">XYZ</Attribute>
+      <Attribute attribute_name="geo_loc_name" harmonized_name="geo_loc_name">not applicable</Attribute>
+    </Attributes>
+  </BioSample>
+</BioSampleSet>

@@ -1,0 +1,39 @@
+# Python bytecode (e.g. from bigslice helper scripts)
+__pycache__/
+*.pyc
+
+# Populator network caches: raw Crossref/ENA responses, including abstracts we
+# may not redistribute.
+scripts/populator/tools/_*_cache.json
+
+# Third-party data we may not redistribute. Kept on disk, never committed; see
+# THIRD_PARTY.md for where each comes from.
+# GOLD ecosystem classification paths (JGI GOLD), read by
+# scripts/populator/adapters/gtdb_ecosystem.py.
+docs/GOLDs5levelEcosystemClassificationPaths.xlsx
+
+# Catalogue metadata inputs to the populator (GOLD, GTDB, GEM, SMAG, SPIRE, TPMC,
+# OMDB, MFD, Madin et al., DSV70). Regenerate with the tools named in
+# THIRD_PARTY.md. kept_duplicate_runs.txt is our own list and stays tracked.
+scripts/populator/data/*/*
+!scripts/populator/data/*/.gitignore
+!scripts/populator/data/mgnify/kept_duplicate_runs.txt
+!scripts/populator/data/qc/uniform_checkm2.tsv.gz
+
+# Third-party assets the app reads at runtime.
+bgc-atlas/public/images/antismash_logo.svg
+bgc-atlas/public/vendor/bgc-viewer/style.css
+bgc-atlas/public/vendor/bgc-viewer/domain-colors.csv
+bgc-atlas/src/assets/fonts/
+bgc-atlas/src/lib/wordlists/petname/
+
+# OpenSearch CA certificate for the app (see scripts/opensearch/README.md), and
+# anything make_certs.sh / make_users.sh write if run inside the repo.
+bgc-atlas/certs/
+os-certs/
+internal_users.yml
+/docker/
+/scripts/clustering-v2/
+/docs/releases/
+/new-schema/seed/bgc_redirect.csv.gz
+.idea/

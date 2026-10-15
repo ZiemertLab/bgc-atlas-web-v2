@@ -1,0 +1,50 @@
+LOCUS       ctgX                    5000 bp    DNA     linear   UNK 01-JAN-1980
+DEFINITION  ctgX.
+ACCESSION   ctgX
+VERSION     ctgX
+FEATURES             Location/Qualifiers
+     region          complement(1..5000)
+                     /candidate_cluster_numbers="1"
+                     /contig_edge="True"
+                     /product="NRPS"
+                     /product="terpene"
+                     /region_number="2"
+                     /tool="antismash"
+     cand_cluster    complement(1..5000)
+                     /candidate_cluster_number="1"
+                     /contig_edge="True"
+                     /kind="interleaved"
+                     /product="NRPS"
+                     /product="terpene"
+                     /tool="antismash"
+     protocluster    complement(1..3000)
+                     /aStool="rule-based-clusters"
+                     /category="NRPS"
+                     /contig_edge="True"
+                     /core_location="[500:2500](-)"
+                     /product="NRPS"
+                     /protocluster_number="1"
+                     /tool="antismash"
+     protocluster    complement(2000..5000)
+                     /aStool="rule-based-clusters"
+                     /category="terpene"
+                     /contig_edge="False"
+                     /core_location="[2800:4200](+)"
+                     /product="terpene"
+                     /protocluster_number="2"
+                     /tool="antismash"
+     CDS             complement(100..900)
+                     /locus_tag="ctgX_1"
+                     /product="AMP-binding protein"
+                     /transl_table=11
+     CDS             complement(1200..2400)
+                     /locus_tag="ctgX_2"
+                     /product="squalene synthase"
+                     /transl_table=11
+     CDS             complement(3000..4500)
+                     /locus_tag="ctgX_3"
+                     /product="hypothetical protein"
+                     /transl_table=11
+ORIGIN
+        1 atgctaagca aattattata tttattatta acagtgccac tttatgcttg gttaatatca
+//
