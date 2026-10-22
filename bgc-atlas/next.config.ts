@@ -19,6 +19,21 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // On every response Next serves. Framing is limited to this origin, so other
+        // sites (including other hosts under the same parent domain, which count as
+        // same-site) cannot frame the app and click through it, while the site's own
+        // antiSMASH viewer iframe (/antismash/<run>/files/...) keeps working. Paths
+        // nginx serves directly (/downloads, /v1/, /lassopeptides/) are not covered.
+        // No HSTS, by choice.
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'self'" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+      {
         // Content-hashed snapshots; :hash is hex-only so unhashed assets don't match.
         source: "/data/:name-:hash([a-f0-9]{8,64}).json",
         headers: [

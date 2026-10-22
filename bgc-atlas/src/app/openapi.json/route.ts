@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 import { API_ENDPOINTS, type ApiEndpoint } from '@/lib/api-catalog';
+import { fillFiguresDeep, getCorpusFigures } from '@/lib/corpus-figures';
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? 'https://bgc-atlas.cs.uni-tuebingen.de';
 
 // Rendered from lib/api-catalog.ts, like /llms-full.txt, so the two cannot describe different APIs.
-export const dynamic = 'force-static';
+// The catalog's {bgcs}-style totals are filled from the database; rebuilt at
+// most hourly.
+export const revalidate = 3600;
 
 const ENVELOPE = {
   type: 'object',
@@ -15,7 +18,20 @@ const ENVELOPE = {
       description:
         'The payload. List endpoints nest a further { data, total, limit, offset } here.',
     },
-    message: { type: 'string' },
+    error: { type: 'string', description: 'Present when success is false.' },
+    code: {
+      type: 'string',
+      enum: ['filter_refused', 'deep_page'],
+      description:
+        'On a refused request (400): filter_refused for a filter value the server cannot honour (named in `rejected`), deep_page for an offset too deep to serve. A 400 may also come without a code.',
+    },
+    rejected: {
+      description: 'With code filter_refused: the refused values or conditions.',
+    },
+    reference: {
+      type: 'string',
+      description: 'On a server-side failure (5xx): a short id to quote when reporting it.',
+    },
   },
   required: ['success'],
 };
@@ -63,11 +79,12 @@ function operation(endpoint: ApiEndpoint) {
   };
 }
 
-export function GET() {
+export async function GET() {
+  const endpoints = fillFiguresDeep(API_ENDPOINTS, await getCorpusFigures());
   const paths: Record<string, Record<string, unknown>> = {};
   // `$ref` pointers resolve from the document root, not from `$defs` nested in a request body.
   const schemas: Record<string, Record<string, unknown>> = {};
-  for (const endpoint of API_ENDPOINTS) {
+  for (const endpoint of endpoints) {
     paths[endpoint.path] ??= {};
     paths[endpoint.path][endpoint.method.toLowerCase()] = operation(endpoint);
     Object.assign(schemas, endpoint.schemas ?? {});

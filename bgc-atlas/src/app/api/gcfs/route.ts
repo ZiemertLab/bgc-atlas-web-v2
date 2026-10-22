@@ -5,9 +5,11 @@ import { buildListCacheKeys, getOrSetCache } from '@/lib/cache';
 import { gcfFilterFields } from '@/lib/filters/field-definitions';
 import { filterRefusalResponse } from '@/lib/api/filter-refusal';
 import { deepPageRefusal } from '@/lib/api/deep-page-refusal';
-import { isBrowseSearchEnabled, searchBrowseIndex } from '@/lib/opensearch/browse-client';
+import {
+  browseQueryRejectionResponse, isBrowseQueryRejection, isBrowseSearchEnabled, searchBrowseIndex,
+} from '@/lib/opensearch/browse-client';
 import { supportsBrowseSearch } from '@/lib/opensearch/browse-query';
-import { mapGcfBrowseDocument } from '@/lib/opensearch/gcf-browse-mapper';
+import { mapGcfBrowseDocument, mapShareFields } from '@/lib/opensearch/gcf-browse-mapper';
 import { withKnownClusterRollup } from '@/lib/opensearch/known-cluster-decorations';
 import { parseAdvancedFilterParam, type FilterCondition } from '@/lib/filters/types';
 import {
@@ -16,11 +18,15 @@ import {
   parseCategoryFilter,
 } from '@/lib/gcf/category-share';
 import { isFamilyClass, parseFamilyClass } from '@/lib/gcf/family-class';
+import { trimTaxonomyByRank } from '@/lib/gcf/trim-taxonomy';
 import {
   buildAdvancedWhere,
   buildNumberCondition,
   buildTextCondition,
 } from '@/lib/filters/prisma-builders';
+import { isShareField } from '@/lib/filters/share-fields';
+import { buildShareCondition } from '@/lib/gcf/share-filter-sql';
+import { shareFieldSelect, type ShareFieldRow } from '@/lib/gcf/share-columns';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -40,6 +46,14 @@ const parseNumber = (value: string | null, options: { fallback?: number; clampMi
   if (options.clampMax !== undefined && result > options.clampMax) result = options.clampMax;
   return result;
 };
+
+// List rows only (see lib/gcf/trim-taxonomy.ts). Applied outside getOrSetCache,
+// like withKnownClusterRollup, so the cached payload keeps its shape.
+const trimListTaxonomy = <T extends { taxonomyDistributionByRank?: Record<string, Record<string, number>> }>(rows: T[]) =>
+  rows.map((row) => {
+    const { distributions, taxaCounts } = trimTaxonomyByRank(row.taxonomyDistributionByRank ?? {});
+    return { ...row, taxonomyDistributionByRank: distributions, taxonomyTaxaCountByRank: taxaCounts };
+  });
 
 export async function GET(request: Request) {
   try {
@@ -70,7 +84,7 @@ export async function GET(request: Request) {
         return NextResponse.json(
           {
             success: true,
-            data: { data: await withKnownClusterRollup(rows), total: result.total, limit, offset },
+            data: { data: await withKnownClusterRollup(trimListTaxonomy(rows)), total: result.total, limit, offset },
             message: `Found ${result.total} GCFs`,
           },
           { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } },
@@ -79,6 +93,8 @@ export async function GET(request: Request) {
         // A refused filter is a 400, not an outage; falling through would re-refuse
         // after a full-corpus scan.
         if (filterRefusalResponse(error)) throw error;
+        // So is a value the index cannot use, or a page past its window.
+        if (isBrowseQueryRejection(error)) return browseQueryRejectionResponse(error, 'GCF browse');
         console.error('OpenSearch GCF browse query failed; falling back to PostgreSQL', error);
       }
     }
@@ -278,8 +294,9 @@ export async function GET(request: Request) {
     // path, so both backends return the same page for one URL.
     orderBy = Prisma.sql`${orderBy}, g.gcf_id ASC`;
 
-    // Bump the version on a change of meaning as well as shape.
-    const { dataKey, countKey } = buildListCacheKeys('gcfs:list:v3', params, [
+    // Bump the version on a change of meaning as well as shape. v5: rows carry
+    // the share fields, which the "why this row matched" columns read.
+    const { dataKey, countKey } = buildListCacheKeys('gcfs:list:v5', params, [
       'limit', 'offset', 'sortField', 'sortOrder', 'sortFields', 'sortOrders', 'ecosystemLevel',
     ]);
 
@@ -296,7 +313,9 @@ export async function GET(request: Request) {
     };
 
     const fetchData = async () => {
-      type RawRow = {
+      // The share columns ride along under their gcf_browse names, so the
+      // OpenSearch mapper's mapShareFields reads them unchanged.
+      type RawRow = ShareFieldRow & {
         gcf_id: string;
         gcf_name: string | null;
         cluster_method: string | null;
@@ -374,6 +393,8 @@ export async function GET(request: Request) {
           gl.max_len,
           gl.complete_count AS complete_member_count,
           gl.member_count AS length_member_count,
+          -- Share fields, as gcf_browse carries them (same names).
+          ${shareFieldSelect('gd')},
           -- Also selected here so the column isn't empty on the SQL fallback.
           COALESCE(mib.accessions, ARRAY[]::text[]) AS mibig_accessions,
           COALESCE(mib.compounds, ARRAY[]::text[]) AS mibig_compounds
@@ -483,6 +504,7 @@ export async function GET(request: Request) {
                 completeCount: toNum(r.complete_member_count) ?? 0,
                 memberCount: toNum(r.length_member_count) ?? 0,
               },
+          ...mapShareFields(r),
         };
       });
 
@@ -497,8 +519,9 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         success: true,
-        // Enriched outside getOrSetCache so the cached payload shape is unchanged.
-        data: { data: await withKnownClusterRollup(data), total, limit, offset },
+        // Enriched outside getOrSetCache so the cached payload shape is unchanged;
+        // the taxonomy trim sits here for the same reason.
+        data: { data: await withKnownClusterRollup(trimListTaxonomy(data)), total, limit, offset },
         message: `Found ${total} GCFs`,
       },
       {
@@ -530,6 +553,9 @@ export async function GET(request: Request) {
 }
 
 const buildGcfAdvancedCondition = (condition: FilterCondition): Prisma.Sql | null => {
+  // Product / Ecosystem share: one definition for both backends, see
+  // lib/filters/share-fields.ts.
+  if (isShareField(condition.field)) return buildShareCondition(condition);
   switch (condition.field) {
     case 'id':
       return buildTextCondition(Prisma.sql`g.gcf_id::text`, condition, toLike);
@@ -537,8 +563,6 @@ const buildGcfAdvancedCondition = (condition: FilterCondition): Prisma.Sql | nul
       return buildTextCondition(Prisma.sql`g.gcf_name`, condition, toLike);
     case 'productType':
       return buildProductCategoryCondition(condition);
-    case 'productClass':
-      return buildProductTypeCondition(condition);
     case 'biome':
       return buildBiomeCondition(condition);
     case 'completeBgcCount':
@@ -586,10 +610,10 @@ const buildGcfAdvancedCondition = (condition: FilterCondition): Prisma.Sql | nul
 };
 
 /**
- * On the multi-valued fields (category, product, biome, taxonomy) a negative
- * means "no value matches", as the index's must_not + `exists` guard does:
- * SQL form `present AND NOT EXISTS(positive)`, `present` mirroring
- * build_browse_corpus.py.
+ * On the multi-valued fields (category, biome, taxonomy, and the share fields in
+ * share-filter-sql.ts) a negative means "no value matches", as the index's
+ * must_not + `exists` guard does: SQL form `present AND NOT EXISTS(positive)`,
+ * `present` mirroring build_browse_corpus.py.
  */
 const POSITIVE_OF: Partial<Record<FilterCondition['operator'], FilterCondition['operator']>> = {
   not_contains: 'contains',
@@ -622,26 +646,6 @@ const buildProductCategoryCondition = (condition: FilterCondition): Prisma.Sql |
         WHERE ${comparison}
       )
     `;
-  });
-
-// Any primary member with a matching granular product (not on gcf_summary_mv).
-const primaryMemberProduct = (test: Prisma.Sql) => Prisma.sql`
-  EXISTS (
-    SELECT 1
-    FROM bgc_gcf bg
-    JOIN bgcs b ON b.id = bg.bgc_id, unnest(b.product) AS pt
-    WHERE bg.gcf_id = g.gcf_id
-      AND bg.is_primary
-      AND ${test}
-  )
-`;
-
-const PRODUCT_PRESENT = primaryMemberProduct(Prisma.sql`pt IS NOT NULL AND pt <> ''`);
-
-const buildProductTypeCondition = (condition: FilterCondition): Prisma.Sql | null =>
-  noneOrAny(condition, PRODUCT_PRESENT, (c) => {
-    const comparison = buildTextCondition(Prisma.sql`pt`, c, toLike);
-    return comparison ? primaryMemberProduct(comparison) : null;
   });
 
 /**

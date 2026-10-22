@@ -20,13 +20,18 @@ from psycopg2.extras import execute_values
 
 from scripts.populator.core.gold_normalize import normalize_gold_ecosystem_path
 
-# Read samples.gold_ecosystem_path; refresh after --apply.
+# Materialized views that read samples.gold_ecosystem_path, directly or through another view
+# in this list; refresh them IN THIS ORDER after --apply. The /gcfs ecosystem columns
+# (gcf_distributions_mv) come from gcf_member_ecosystem_mv, which reads assembly_samples_mv.
+# Every view here has a unique index, so all refresh CONCURRENTLY without blocking reads.
 GOLD_MVS = [
-    "assembly_samples_mv",
-    "gcf_gold_ecosystem_distribution_mv",
-    "bgc_gold_ecosystem_distribution_mv",
-    "sample_map_view",
     "sample_summary",
+    "assembly_samples_mv",
+    "sample_map_view",
+    "bgc_gold_ecosystem_distribution_mv",
+    "gcf_gold_ecosystem_distribution_mv",
+    "gcf_member_ecosystem_mv",
+    "gcf_distributions_mv",
 ]
 
 
@@ -106,7 +111,7 @@ def main() -> int:
         print("committed.", flush=True)
         print("\nNOW REFRESH the gold-carrying materialized views:", flush=True)
         for mv in GOLD_MVS:
-            print(f"  REFRESH MATERIALIZED VIEW {mv};", flush=True)
+            print(f"  REFRESH MATERIALIZED VIEW CONCURRENTLY {mv};", flush=True)
         return 0
     except Exception:
         conn.rollback()

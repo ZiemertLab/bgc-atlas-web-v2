@@ -9,6 +9,7 @@ import { AntiSmashRunStatus } from '@prisma/client';
 import prisma from '@/lib/prisma';
 
 import { findAntismashIndex, rankResultsJsonCandidates } from './antismash-viewer-select';
+import { createConcurrencyGate, GateBusyError } from './concurrency-gate';
 
 const toIsoString = (value: Date | string | null | undefined) => {
   if (!value) {
@@ -289,6 +290,8 @@ export type AntismashExtractionStatus = 'ready' | 'missing-file' | 'error';
 
 export interface AntismashExtractionResult {
   status: AntismashExtractionStatus;
+  /** Refused because the extraction line was full; the message is the reader's to see. */
+  busy?: boolean;
   extractedPath?: string;
   alreadyExisted?: boolean;
   message?: string;
@@ -300,12 +303,30 @@ export interface AntismashExtractionResult {
 // In-process is enough: the server is a single pm2 fork_mode process.
 const inflightExtractions = new Map<string, Promise<AntismashExtractionResult>>();
 
+// At most two runs unpack at once, box-wide: each is minutes of `tar` on a small machine that also serves the
+// site, and the per-run dedup above does nothing against many different runs. Past the line a
+// request is told to come back rather than queued.
+const EXTRACTION_GATE = createConcurrencyGate(2, 15 * 60_000, 8);
+export const ANTISMASH_VIEWER_BUSY_MESSAGE =
+  'The viewer is busy preparing other antiSMASH results. Please try again in a minute.';
+
+/** A new extraction would be refused right now; say so instead of starting one. */
+export const antismashExtractionLineFull = (): boolean => EXTRACTION_GATE.full;
+
+/** A request for this run would start a new `tar`: not on disk and not already running. */
+export async function antismashExtractionWouldStart(runId: string): Promise<boolean> {
+  if (inflightExtractions.has(runId)) return false;
+  const state = await getAntismashExtractionState(runId);
+  return state === null || state.status === 'error';
+}
+
 // Large extractions take minutes on CephFS, so clients start one and poll. State falls back to
 // the on-disk marker so a restart mid-poll still reports `ready`.
 export type AntismashExtractionPhase = 'extracting' | 'ready' | 'missing-file' | 'error';
 
 export interface AntismashExtractionState {
   status: AntismashExtractionPhase;
+  busy?: boolean;
   startedAt: number;
   elapsedMs: number;
   archiveBytes: number | null;
@@ -323,6 +344,15 @@ export async function startAntismashRunExtraction(
   const known = await getAntismashExtractionState(run.id);
   if (known && known.status !== 'error') {
     return known;
+  }
+
+  // Refused synchronously, and not recorded: a poll that found a stored refusal
+  // would restart it, and pay for it, every few seconds while the line stays full.
+  if (EXTRACTION_GATE.full) {
+    return {
+      status: 'error', busy: true, message: ANTISMASH_VIEWER_BUSY_MESSAGE,
+      startedAt: Date.now(), elapsedMs: 0, archiveBytes: null,
+    };
   }
 
   let archiveBytes: number | null = null;
@@ -348,6 +378,7 @@ export async function startAntismashRunExtraction(
       extractionStates.set(run.id, {
         ...state,
         status: result.status === 'ready' ? 'ready' : result.status,
+        busy: result.busy,
         elapsedMs: Date.now() - state.startedAt,
         message: result.message,
         indexRelativePath: result.indexRelativePath ?? null,
@@ -387,6 +418,14 @@ export async function getAntismashExtractionState(
 
   const tracked = extractionStates.get(runId);
   if (!tracked) {
+    return null;
+  }
+  // `ready` describes files on disk, and the eviction sweep (or a manual cache
+  // clear) removes them without telling this map. Trusting the entry here sent
+  // every later request into an empty directory -- "results JSON not found in
+  // archive" -- and nothing re-extracted the run until the server restarted.
+  if (tracked.status === 'ready') {
+    extractionStates.delete(runId);
     return null;
   }
   return { ...tracked, elapsedMs: Date.now() - tracked.startedAt };
@@ -503,10 +542,11 @@ async function extractAntismashRun(run: AntismashRunRecord): Promise<AntismashEx
   }
 
   try {
-    await rm(targetDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    await mkdir(targetDir, { recursive: true });
-
-    await runTarExtraction(archivePath, targetDir);
+    await EXTRACTION_GATE.run(async () => {
+      await rm(targetDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await mkdir(targetDir, { recursive: true });
+      await runTarExtraction(archivePath, targetDir);
+    });
     // Measure before the marker exists, so a sweep in between sees an unmarked directory.
     const footprint = await measureDirectory(targetDir);
     const marker: ExtractionMarker = {
@@ -533,6 +573,11 @@ async function extractAntismashRun(run: AntismashRunRecord): Promise<AntismashEx
       regionsRelativePath: indexLocation.relativeRegionsPath,
     };
   } catch (error) {
+    // Refused at the gate: nothing was written, and the directory may belong to a
+    // later attempt -- leave it alone.
+    if (error instanceof GateBusyError) {
+      return { status: 'error', busy: true, message: ANTISMASH_VIEWER_BUSY_MESSAGE };
+    }
     await rm(targetDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
     return {

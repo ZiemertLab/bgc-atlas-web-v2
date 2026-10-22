@@ -66,6 +66,8 @@ export interface SampleValidationResult {
 
 export interface BatchValidationResult {
   valid: boolean;
+  /** From the validate endpoint: what to fix, rows that could not be read included. */
+  problems?: string[];
   totalSamples: number;
   validSamples: number;
   invalidSamples: number;

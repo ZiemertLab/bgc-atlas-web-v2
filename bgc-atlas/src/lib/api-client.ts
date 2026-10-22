@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/basePath';
 import { isErrorReference, withReference } from '@/lib/api/error-messages';
+import { DEEP_PAGE_CODE, FILTER_REFUSED_CODE } from '@/lib/api/refusal-codes';
 
 export class ApiError extends Error {
   status: number;
@@ -16,7 +17,42 @@ export class ApiError extends Error {
 // A 4xx is an answer, not a transient failure; retrying only delays the 404 page.
 export const retryUnlessClientError = (failureCount: number, error: unknown): boolean =>
   !(error instanceof ApiError && error.status >= 400 && error.status < 500) &&
+  // Nor a 503 the server wrote for the reader (userFacing503 below): it already
+  // said when to come back, and asking again at once re-runs a query that was
+  // refused for being too heavy, or queues again for a slot that was full.
+  !(error instanceof ApiError && error.status === 503 && userFacing503(error.body) !== null) &&
   failureCount < 2;
+
+/**
+ * The `code` of a 400 body (see lib/api/refusal-codes.ts), or null: not an
+ * ApiError, not a 400, or a 400 that carries no code.
+ */
+const refusalCode = (error: unknown): string | null => {
+  if (!(error instanceof ApiError) || error.status !== 400 || !error.body) return null;
+  try {
+    const { code } = JSON.parse(error.body) as { code?: unknown };
+    return typeof code === 'string' ? code : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * True when the server refused a FILTER it will not answer (a 400 coded
+ * `filter_refused`). Asking again sends the same URL and gets the same answer,
+ * so a list page points at the way out -- the chip row -- rather than a Retry.
+ * Other 400s (a page too deep to serve, a removed parameter) are not this: the
+ * reader may have no filter to remove.
+ */
+export const isFilterRefusal = (error: unknown): boolean =>
+  refusalCode(error) === FILTER_REFUSED_CODE;
+
+/**
+ * True when the server refused a page past the result window (a 400 coded
+ * `deep_page`). The filters may be fine; the pager is the way out.
+ */
+export const isDeepPageRefusal = (error: unknown): boolean =>
+  refusalCode(error) === DEEP_PAGE_CODE;
 
 type FetchOptions = RequestInit & { signal?: AbortSignal };
 
@@ -38,7 +74,28 @@ const referenceFromBody = (body: string | undefined): string | null => {
   }
 };
 
+/**
+ * A 503 the server wrote for the reader: "temporarily unavailable, and why". Shown
+ * only when the body says so with `userFacing: true`, so a 503 carrying an
+ * exception's text stays as hidden as any other 5xx.
+ */
+const userFacing503 = (body: string | undefined): string | null => {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as { userFacing?: unknown; error?: unknown };
+    return parsed.userFacing === true && typeof parsed.error === 'string' && parsed.error.trim()
+      ? cap(parsed.error.trim())
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 export function errorMessageFromBody(body: string | undefined, status: number): string {
+  if (status === 503) {
+    const notice = userFacing503(body);
+    if (notice) return notice;
+  }
   // 5xx never renders the server's text, only the log reference serverError attaches.
   if (status < 400 || status >= 500) return withReference(referenceFromBody(body));
   if (body) {

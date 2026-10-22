@@ -20,7 +20,15 @@ vi.mock('@/lib/redis-client', () => ({
     del: async () => 0,
   },
 }));
-vi.mock('@/lib/prisma', () => ({ default: { $queryRaw: queryRaw } }));
+// /api/bgcs runs its fallback count and page queries in a transaction that sets a
+// shorter statement_timeout first (withFallbackTimeout in api/bgcs/route.ts).
+vi.mock('@/lib/prisma', () => ({
+  default: {
+    $queryRaw: queryRaw,
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ $queryRaw: queryRaw, $executeRawUnsafe: async () => 0 }),
+  },
+}));
 
 // The SQL fallback is the path under test.
 vi.mock('@/lib/opensearch/browse-client', () => ({
@@ -389,11 +397,21 @@ describe.each(BROWSE_ROUTES)('%s: a refusal from the browse index is a 400, not 
   // from a pre-reset module instance would miss and pass as a green fallback.
   const callWithIndex = async (makeFailure: () => Promise<unknown>) => {
     vi.resetModules();
-    vi.doMock('@/lib/opensearch/browse-client', () => ({
-      isBrowseSearchEnabled: () => true,
-      searchBrowseIndex: browseSearch,
-      aggregateBrowseIndex: browseSearch,
-    }));
+    vi.doMock('@/lib/opensearch/browse-client', async () => {
+      // The route's retry needs the real transient-error test and timeout scope.
+      const {
+        isTransientBrowseError, withBrowseTimeout, isBrowseQueryRejection, browseQueryRejectionResponse,
+      } = await vi.importActual<typeof import('@/lib/opensearch/browse-client')>('@/lib/opensearch/browse-client');
+      return {
+        isBrowseSearchEnabled: () => true,
+        searchBrowseIndex: browseSearch,
+        aggregateBrowseIndex: browseSearch,
+        isTransientBrowseError,
+        isBrowseQueryRejection,
+        browseQueryRejectionResponse,
+        withBrowseTimeout,
+      };
+    });
     browseSearch.mockReset().mockRejectedValue(await makeFailure());
     return call(route, '');
   };

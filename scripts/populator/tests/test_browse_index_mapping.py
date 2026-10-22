@@ -146,3 +146,22 @@ def test_bgc_mapping_stores_the_combined_archive_offset_without_indexing_it():
     props = build_mapping("bgcs")["mappings"]["properties"]
     assert props["gbk_offset"] == {"type": "long", "index": False, "doc_values": False}
     assert props["gbk_length"] == {"type": "integer", "index": False, "doc_values": False}
+
+
+def test_gcf_mapping_carries_the_share_filter_fields():
+    """The thresholds are `term`
+    filters, so keyword; the resolved share is displayed and sorted, so float;
+    the per-product share is display-only and keyed by ~100 products, so it
+    must never reach the dynamic mapping."""
+    props = build_mapping("gcfs")["mappings"]["properties"]
+    for t in (10, 50, 90):
+        assert props[f"product_types_ge{t}"] == {"type": "keyword"}
+        for n in range(1, 6):
+            assert props[f"eco_l{n}_ge{t}"] == {"type": "keyword"}
+    for n in range(1, 6):
+        assert props[f"resolved_pct_l{n}"] == {"type": "float"}
+        assert props[f"dom_ecosystem_l{n}"] == {"type": "keyword"}
+        assert props[f"max_pct_l{n}"] == {"type": "float"}
+    assert props["product_type_member_share"] == {"type": "object", "enabled": False}
+    for n in range(1, 6):
+        assert props[f"eco_l{n}_any"] == {"type": "keyword"}

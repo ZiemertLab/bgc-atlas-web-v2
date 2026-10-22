@@ -1,20 +1,23 @@
 "use client";
 
 import { apiFetch, downloadFromApi } from "@/lib/basePath";
-import { useState, useRef, useEffect } from 'react';
+import { Suspense, useState, useRef, useEffect } from 'react';
 import { MainLayout } from '@/components/layout/main-layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PropertySearchTab } from '@/components/search/property-search-tab';
 import { Upload, Play, X, Trash2, Loader2, Clock, ChevronDown } from 'lucide-react';
 import { InfoTooltip } from '@/components/ui/info-tooltip';
 import { toast } from '@/lib/hooks/use-toast';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { mergeQuery } from '@/lib/url-state';
 import { getStoredJobs, storeJob, removeJob, clearAllJobs, type JobInfo } from '@/lib/utils/job-cookies';
 import { looksLikeGenbank } from '@/lib/seqsearch/genbank';
 import { SEARCH_DEFAULTS } from '@/lib/seqsearch/defaults';
 import { FileDropZone } from '@/components/ui/file-drop-zone';
+import { BIGSLICE_MAX_FILE_BYTES, BIGSLICE_MAX_FILES, BIGSLICE_MAX_TOTAL_BYTES, mib } from '@/lib/bigslice/upload-limits';
 
 const SEQUENCE_FILE_EXTENSIONS = [
   '.fa', '.fasta', '.fas', '.txt',
@@ -55,17 +58,48 @@ const GENBANK_UPLOAD_HELP = (
   </>
 );
 
+const SEARCH_TABS = ['properties', 'bgc', 'sequence'] as const;
+type SearchTab = (typeof SEARCH_TABS)[number];
+const DEFAULT_TAB: SearchTab = 'properties';
+
+/** The tab ?tab= names. 'metadata' was a separate tab until its fields and
+ *  cross-entity queries were folded into Properties; old links still land there. */
+function readTab(value: string | null): SearchTab {
+  return (SEARCH_TABS as readonly string[]).includes(value ?? '') ? (value as SearchTab) : DEFAULT_TAB;
+}
+
+/**
+ * The active tab, kept in ?tab=. Only this reads useSearchParams, so only the tabs
+ * sit inside the Suspense boundary it needs; the header and queue strip stay in the
+ * server HTML, and the boundary's fallback is the tabs on their default.
+ */
+function UrlTabs({ children }: { children: (tab: SearchTab, onChange: (value: string) => void) => React.ReactNode }) {
+  const searchParams = useSearchParams();
+  const urlTab = readTab(searchParams.get('tab'));
+  const [activeTab, setActiveTab] = useState<SearchTab>(urlTab);
+  // A same-route link (/search?tab=sequence from the nav) or Back/Forward changes
+  // ?tab= without remounting the page. Our own writes arrive here already equal.
+  const [seenUrlTab, setSeenUrlTab] = useState(urlTab);
+  if (urlTab !== seenUrlTab) {
+    setSeenUrlTab(urlTab);
+    setActiveTab(urlTab);
+  }
+  // Written with history.replaceState from the live address, not router.replace from
+  // searchParams: Property Search writes ?props/?ret/?fam the same way, and when its
+  // panel mounts on this very switch it may write in the same tick. A router.replace
+  // commits a URL computed before that write and would drop it; reading
+  // window.location at write time keeps both. The state must be null: Next skips
+  // syncing useSearchParams for a state carrying its own __NA marker.
+  const changeTab = (value: string) => {
+    const tab = readTab(value);
+    setActiveTab(tab);
+    const query = mergeQuery(window.location.search, [['tab', tab, DEFAULT_TAB]]);
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+  };
+  return <>{children(activeTab, changeTab)}</>;
+}
+
 export default function SearchPage() {
-  const [activeTab, setActiveTab] = useState('properties');
-  useEffect(() => {
-    const tab = new URLSearchParams(window.location.search).get('tab');
-    // 'metadata' was folded into this tab; keep old links working.
-    if (tab === 'metadata') {
-      setActiveTab('properties');
-    } else if (tab && ['bgc', 'sequence', 'properties'].includes(tab)) {
-      setActiveTab(tab);
-    }
-  }, []);
   const [, setMounted] = useState(false);
   const [sequenceText, setSequenceText] = useState('')
   // GenBank input only; ignored for FASTA.
@@ -312,6 +346,13 @@ WFGVHS`;
         storeJob(sessionId, 'sequence');
         setStoredSessions(getStoredJobs());
 
+        // A GenBank upload can be searched only in part (CDS skipped, or the nucleotides
+        // searched instead of the genes). The route says so; the reader has to see it, so
+        // it is shown here, where it survives the move to the results page.
+        if (typeof result.notice === 'string' && result.notice) {
+          toast({ title: 'Searching part of the file', description: result.notice, duration: 15_000 });
+        }
+
         router.push(`/search/results/${sessionId}`);
       } else {
         toast({
@@ -343,8 +384,9 @@ WFGVHS`;
     }
 
     const totalSize = uploadedFiles.reduce((sum, file) => sum + file.size, 0);
-    const maxSize = 500 * 1024 * 1024;
-    const maxFiles = 100;
+    const maxSize = BIGSLICE_MAX_TOTAL_BYTES;
+    const maxFiles = BIGSLICE_MAX_FILES;
+    const oversized = uploadedFiles.find((file) => file.size > BIGSLICE_MAX_FILE_BYTES);
 
     if (uploadedFiles.length > maxFiles) {
       toast({
@@ -355,11 +397,21 @@ WFGVHS`;
       return;
     }
 
+    // The per-file limit was checked only by the server, after the whole upload.
+    if (oversized) {
+      toast({
+        variant: 'destructive',
+        title: 'File too large',
+        description: `${oversized.name} is over the ${mib(BIGSLICE_MAX_FILE_BYTES)} limit for one file.`,
+      });
+      return;
+    }
+
     if (totalSize > maxSize) {
       toast({
         variant: 'destructive',
         title: 'Files too large',
-        description: 'Total file size exceeds 500 MB. Please reduce the number or size of files.',
+        description: `Total file size exceeds ${mib(maxSize)}. Please reduce the number or size of files.`,
       });
       return;
     }
@@ -379,7 +431,14 @@ WFGVHS`;
         body: formData,
       });
 
-      const result = await response.json();
+      // nginx answers an oversized request with its own HTML page, which
+      // response.json() turned into a JSON parse error in the toast.
+      const result = await response.json().catch(() => ({
+        success: false,
+        error: response.status === 413
+          ? `The upload is larger than the ${mib(BIGSLICE_MAX_TOTAL_BYTES)} the server accepts.`
+          : `The server could not take the upload (HTTP ${response.status}). Please try again.`,
+      }));
 
       if (result.success) {
         const sessionId = result.sessionId;
@@ -406,52 +465,17 @@ WFGVHS`;
     }
   };
 
-  return (
-    <MainLayout>
-      <div className="w-full py-6">
-        <header className="mb-6 border-b border-border pb-4">
-          <h1 className="atlas-rule mb-3 text-2xl font-semibold tracking-tight md:text-3xl">
-            Advanced search
-          </h1>
-          <p className="mt-3 max-w-3xl text-[14px] leading-relaxed text-muted-foreground">
-            Explore biosynthetic gene clusters by their properties, metadata, sequence similarity
-            (DIAMOND), or BiG-SLiCE searches to find GCFs that are similar to your query.
-          </p>
-        </header>
+  const searchTabList = (
+    <TabsList className="mb-6 w-full justify-start">
+      <TabsTrigger value="properties">Properties &amp; metadata</TabsTrigger>
+      <TabsTrigger value="bgc">BGC clustering</TabsTrigger>
+      <TabsTrigger value="sequence">Sequence similarity</TabsTrigger>
+    </TabsList>
+  );
 
-        <section className="mb-6 border-b border-border pb-4">
-          <div className="section-label mb-2.5">Queue status</div>
-          <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
-            <div className="leader-row">
-              <dt className="whitespace-nowrap text-muted-foreground">Running</dt>
-              <span className="leader-dots" aria-hidden />
-              <dd className="font-mono font-medium tabular-nums text-foreground">
-                {queueStats?.active ?? 0}
-              </dd>
-            </div>
-            <div className="leader-row">
-              <dt className="whitespace-nowrap text-muted-foreground">In queue</dt>
-              <span className="leader-dots" aria-hidden />
-              <dd className="font-mono font-medium tabular-nums text-foreground">
-                {queueStats?.waiting ?? 0}
-              </dd>
-            </div>
-            <div className="leader-row">
-              <dt className="whitespace-nowrap text-muted-foreground">Completed</dt>
-              <span className="leader-dots" aria-hidden />
-              <dd className="font-mono font-medium tabular-nums text-foreground">
-                {(queueStats?.completed ?? 0).toLocaleString()}
-              </dd>
-            </div>
-          </dl>
-        </section>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="mb-6 w-full justify-start">
-            <TabsTrigger value="properties">Properties &amp; metadata</TabsTrigger>
-            <TabsTrigger value="bgc">BGC clustering</TabsTrigger>
-            <TabsTrigger value="sequence">Sequence similarity</TabsTrigger>
-          </TabsList>
+  const renderTabs = (tab: SearchTab, onTabChange: (value: string) => void) => (
+        <Tabs value={tab} onValueChange={onTabChange} className="w-full">
+          {searchTabList}
 
           <TabsContent value="bgc" className="space-y-4">
             <p className="mb-3 text-base text-muted-foreground">
@@ -666,16 +690,24 @@ WFGVHS`;
                     <div className="mt-3 space-y-3">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-1.5">
-                          <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sequence type</label>
-                          <select
-                            className="h-8 w-full rounded-sm border border-input bg-card px-2 text-[13px]"
+                          <label htmlFor="sequence-type" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sequence type</label>
+                          <Select
                             value={sequenceParams.sequenceType}
-                            onChange={(e) => setSequenceParams(prev => ({ ...prev, sequenceType: e.target.value }))}
+                            onValueChange={(val) => setSequenceParams(prev => ({ ...prev, sequenceType: val }))}
                           >
-                            <option value="auto">Auto-detect</option>
-                            <option value="dna">Nucleotide (blastx)</option>
-                            <option value="protein">Protein (blastp)</option>
-                          </select>
+                            <SelectTrigger
+                              id="sequence-type"
+                              size="sm"
+                              className="w-full text-[13px]"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">Auto-detect</SelectItem>
+                              <SelectItem value="dna">Nucleotide (blastx)</SelectItem>
+                              <SelectItem value="protein">Protein (blastp)</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div className="space-y-1.5">
                           <div className="flex items-center gap-1">
@@ -749,6 +781,62 @@ WFGVHS`;
             <PropertySearchTab />
           </TabsContent>
         </Tabs>
+  );
+
+  return (
+    <MainLayout>
+      <div className="w-full py-6">
+        <header className="mb-6 border-b border-border pb-4">
+          <h1 className="atlas-rule mb-3 text-2xl font-semibold tracking-tight md:text-3xl">
+            Advanced search
+          </h1>
+          <p className="mt-3 max-w-3xl text-[14px] leading-relaxed text-muted-foreground">
+            Explore biosynthetic gene clusters by their properties, metadata, sequence similarity
+            (DIAMOND), or BiG-SLiCE searches to find GCFs that are similar to your query.
+          </p>
+        </header>
+
+        <section className="mb-6 border-b border-border pb-4">
+          <div className="section-label mb-2.5">Queue status</div>
+          <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
+            <div className="leader-row">
+              <dt className="whitespace-nowrap text-muted-foreground">Running</dt>
+              <span className="leader-dots" aria-hidden />
+              <dd className="font-mono font-medium tabular-nums text-foreground">
+                {queueStats?.active ?? 0}
+              </dd>
+            </div>
+            <div className="leader-row">
+              <dt className="whitespace-nowrap text-muted-foreground">In queue</dt>
+              <span className="leader-dots" aria-hidden />
+              <dd className="font-mono font-medium tabular-nums text-foreground">
+                {queueStats?.waiting ?? 0}
+              </dd>
+            </div>
+            <div className="leader-row">
+              <dt className="whitespace-nowrap text-muted-foreground">Completed</dt>
+              <span className="leader-dots" aria-hidden />
+              <dd className="font-mono font-medium tabular-nums text-foreground">
+                {(queueStats?.completed ?? 0).toLocaleString()}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        {/* Search Tabs. useSearchParams cannot run in the static prerender, so the
+            fallback is what the server sends, shown until the client renders the
+            real tabs and swaps them in. It stays inert: the tab list alone, on the
+            default, with no panel and no onValueChange, so the server HTML holds
+            nothing stateful and no handler that writes the URL. */}
+        <Suspense
+          fallback={
+            <Tabs value={DEFAULT_TAB} className="w-full" aria-busy="true">
+              {searchTabList}
+            </Tabs>
+          }
+        >
+          <UrlTabs>{renderTabs}</UrlTabs>
+        </Suspense>
 
         {isUploading && (
           <div className="mb-4 p-3 rounded-md border bg-accent/5">

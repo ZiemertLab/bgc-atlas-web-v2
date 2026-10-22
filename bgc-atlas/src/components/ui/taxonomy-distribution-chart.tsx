@@ -10,6 +10,9 @@ interface TaxonomyDistributionChartProps {
   distribution: Record<string, number>;
   height?: number;
   className?: string;
+  // The /gcfs list API sends only each rank's top taxa; this is how many the
+  // GCF spans in total, so "Other" can count the taxa that were trimmed away.
+  taxaCount?: number;
 }
 
 interface TooltipState {
@@ -21,10 +24,61 @@ interface TooltipState {
   percentage: number;
 }
 
+// Build segments. Taxa holding at least OTHER_MIN_PERCENT of the GCF are
+// drawn individually; the long tail (at low ranks a GCF can span thousands of
+// taxa, each a tiny share) is collapsed into a single "Other" bucket. Other's
+// width fills the bar to 100%, so it also absorbs the small shortfall from
+// rounding each taxon's percentage — no blank, unlabelled gap at the right.
+const MIN_SEGMENT_PX = 0.5;
+const OTHER_MIN_PERCENT = 5; // taxa below this share collapse into "Other"
+
+export type TaxonomySegment = { taxon: string; percentage: number; isOther: boolean; count: number };
+
+export function buildTaxonomySegments(
+  distribution: Record<string, number>,
+  width: number,
+  taxaCount?: number,
+): TaxonomySegment[] {
+  // Sort by percentage descending for consistent visual order
+  const sorted = Object.entries(distribution).sort(([, a], [, b]) => b - a);
+  const toPx = (percentage: number) => (percentage / 100) * width;
+
+  const drawnSegments: TaxonomySegment[] = [];
+  let drawnSum = 0;
+  let undrawnGiven = 0;
+  sorted.forEach(([taxon, percentage], index) => {
+    // Keep a taxon out of "Other" when it meets the threshold (and is wide
+    // enough to render). Always keep the single largest taxon so a very even
+    // distribution never collapses into an all-"Other" bar.
+    const meetsThreshold = percentage >= OTHER_MIN_PERCENT || index === 0;
+    if (meetsThreshold && toPx(percentage) >= MIN_SEGMENT_PX) {
+      drawnSegments.push({ taxon, percentage, isOther: false, count: 1 });
+      drawnSum += percentage;
+    } else {
+      undrawnGiven += 1;
+    }
+  });
+
+  // With taxaCount, the tail may have been trimmed from `distribution`
+  // entirely while still existing, so count Other from the full total. The max
+  // never reports fewer than the entries held, should taxaCount be stale.
+  const otherCount = taxaCount !== undefined
+    ? Math.max(undrawnGiven, taxaCount - drawnSegments.length)
+    : undrawnGiven;
+
+  const segments: TaxonomySegment[] = [...drawnSegments];
+  const otherPercentage = Math.max(0, 100 - drawnSum);
+  if (otherCount > 0 && toPx(otherPercentage) >= MIN_SEGMENT_PX) {
+    segments.push({ taxon: '__other__', percentage: otherPercentage, isOther: true, count: otherCount });
+  }
+  return segments;
+}
+
 function TaxonomyDistributionChartComponent({
   distribution,
   height = 24,
   className = '',
+  taxaCount,
 }: TaxonomyDistributionChartProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,11 +95,7 @@ function TaxonomyDistributionChartComponent({
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
 
-    const entries = Object.entries(distribution);
-
-    if (entries.length === 0) return;
-
-    const sorted = entries.sort(([, a], [, b]) => b - a);
+    if (Object.keys(distribution).length === 0) return;
 
     const currentWidth = Math.max(width || containerRef.current.getBoundingClientRect().width, 100);
 
@@ -58,39 +108,13 @@ function TaxonomyDistributionChartComponent({
       .domain([0, 100])
       .range([0, currentWidth]);
 
-    // Taxa below OTHER_MIN_PERCENT collapse into "Other", which fills the bar to 100% and so
-    // also absorbs per-taxon rounding.
-    const MIN_SEGMENT_PX = 0.5;
-    const OTHER_MIN_PERCENT = 5;
     const OTHER_COLOR = '#cbd5e1'; // slate-300: neutral, distinct from the Unknown gray
-    type Segment = { taxon: string; percentage: number; isOther: boolean; count: number };
-
-    const drawnSegments: Segment[] = [];
-    let drawnSum = 0;
-    let otherCount = 0;
-    sorted.forEach(([taxon, percentage], index) => {
-      // Always keep the largest taxon so an even distribution never becomes all "Other".
-      const meetsThreshold = percentage >= OTHER_MIN_PERCENT || index === 0;
-      if (meetsThreshold && xScale(percentage) >= MIN_SEGMENT_PX) {
-        drawnSegments.push({ taxon, percentage, isOther: false, count: 1 });
-        drawnSum += percentage;
-      } else {
-        otherCount += 1;
-      }
-    });
-
-    const segments: Segment[] = [...drawnSegments];
-    const otherPercentage = Math.max(0, 100 - drawnSum);
-    if (otherCount > 0 && xScale(otherPercentage) >= MIN_SEGMENT_PX) {
-      segments.push({ taxon: '__other__', percentage: otherPercentage, isOther: true, count: otherCount });
-    }
+    const segments = buildTaxonomySegments(distribution, currentWidth, taxaCount);
 
     let cumulativeX = 0;
 
     segments.forEach((seg, i) => {
       const barWidth = xScale(seg.percentage);
-
-      if (barWidth < 0.5) return;
 
       const fill = seg.isOther ? OTHER_COLOR : getColor(seg.taxon, i);
       const displayName = seg.isOther ? 'Other' : getTaxonDisplayName(seg.taxon);
@@ -143,7 +167,7 @@ function TaxonomyDistributionChartComponent({
       cumulativeX += barWidth;
     });
 
-  }, [distribution, height, width]);
+  }, [distribution, height, width, taxaCount]);
 
   if (!distribution || Object.keys(distribution).length === 0) {
     return <span className="text-muted-foreground text-xs">No data</span>;
@@ -185,7 +209,8 @@ export const TaxonomyDistributionChart = memo(
   (prevProps, nextProps) => {
     return (
       JSON.stringify(prevProps.distribution) === JSON.stringify(nextProps.distribution) &&
-      prevProps.height === nextProps.height
+      prevProps.height === nextProps.height &&
+      prevProps.taxaCount === nextProps.taxaCount
     );
   }
 );

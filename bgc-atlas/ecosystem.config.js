@@ -11,6 +11,12 @@ module.exports = {
     min_uptime: "30s",
     max_restarts: 50,
     restart_delay: 2000,
+    // Prefix each write to the out/error logs with the time. Without it the
+    // error log could only be dated by matching entries against the Postgres
+    // and nginx logs. Applied to the running process with
+    // `pm2 restart bgc-atlas-v2 --log-date-format "..."` + `pm2 save`; pm2
+    // does not pick this up from the file on a plain restart.
+    log_date_format: "YYYY-MM-DD HH:mm:ss.SSS Z",
     env: {
       NODE_ENV: "production",
       PORT: "3001",

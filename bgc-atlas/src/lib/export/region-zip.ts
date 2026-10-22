@@ -1,16 +1,19 @@
 import archiver from 'archiver';
 import { createWriteStream } from 'fs';
+import { rename, unlink } from 'fs/promises';
 
 import {
   openCombinedArchive,
   type CombinedArchiveReader,
 } from '@/lib/bgc-download/combined-archive';
 import { readRegionGbk, RegionBusyError } from '@/lib/bgc-download/read-region';
+import { PARTIAL_SUFFIX } from './export-dir';
 import type { ExportRegion } from './region-sources';
 
 // Regions come from the combined archive by offset when possible, else from the run tarball
 // (bounded by readRegionGbk's box-wide tar limit). An unreadable region is counted missing and the
-// export carries on.
+// export carries on. The zip is written to `<outputPath>.partial` and renamed once complete, so
+// `outputPath` only ever holds a whole archive; a failure deletes the partial file.
 
 const BUSY_RETRY_MS = 2000;
 const BUSY_MAX_WAIT_MS = 10 * 60 * 1000;
@@ -53,13 +56,20 @@ export async function createRegionZip(
   retryMs: number = BUSY_RETRY_MS,
   openCombined: OpenCombined = () => openCombinedArchive(),
 ): Promise<RegionZipResult> {
-  const output = createWriteStream(outputPath);
+  const partialPath = `${outputPath}${PARTIAL_SUFFIX}`;
+  const output = createWriteStream(partialPath);
   const archive = archiver('zip', { zlib: { level: 6 } });
   const closed = new Promise<void>((resolve, reject) => {
     output.on('close', () => resolve());
     output.on('error', reject);
     archive.on('error', reject);
   });
+  // A write error during the read loop rejects `closed` before anything awaits
+  // it: handled here, so it is not an unhandled rejection, and checked each
+  // batch, so the loop stops instead of reading the rest of the export into
+  // archiver's buffer with nowhere to write it.
+  let writeError: unknown = null;
+  closed.catch((error) => { writeError = error; });
   archive.pipe(output);
 
   let combined: CombinedArchiveReader | null = null;
@@ -95,6 +105,7 @@ export async function createRegionZip(
   let lastProgress = Date.now();
   try {
     for (let i = 0; i < regions.length; i += READS_AT_ONCE) {
+      if (writeError) throw writeError;
       const slice = regions.slice(i, i + READS_AT_ONCE);
       const results = await Promise.allSettled(slice.map(readOne));
       results.forEach((result, j) => {
@@ -115,12 +126,16 @@ export async function createRegionZip(
     }
     if (onProgress) await onProgress(processed);
     await archive.finalize();
+    await closed;
+    await rename(partialPath, outputPath);
   } catch (error) {
     archive.abort();
+    output.destroy();
+    if (!output.closed) await new Promise<void>((resolve) => output.once('close', () => resolve()));
+    await unlink(partialPath).catch(() => { /* never created, or already gone */ });
     throw error;
   } finally {
     await combined?.close().catch(() => {});
   }
-  await closed;
   return { missingFiles, totalSize: archive.pointer(), fromCombined, fromRuns };
 }

@@ -2,8 +2,9 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { FamilyClass } from '@/lib/gcf/family-class';
 import { apiGet } from '@/lib/api-client';
 import { queryKeys } from '@/lib/query-keys';
-import type { PaginatedResponse, TaxonomyDistributionByRank } from '@/lib/types';
+import type { PaginatedResponse, TaxonomyDistributionByRank, TaxonomyRank } from '@/lib/types';
 import type { GcfLengthStats } from '@/lib/utils/bgc-length';
+import type { ShareThresholdSets } from '@/lib/opensearch/gcf-browse-mapper';
 
 type HookResult<T> = {
   data: PaginatedResponse<T>;
@@ -11,6 +12,8 @@ type HookResult<T> = {
   isFetching: boolean;
   error: Error | null;
   hasLoaded: boolean;
+  /** Re-run the query (the list's Retry). */
+  refetch: () => void;
 };
 
 const createEmptyResponse = (params?: { limit?: number; offset?: number }): PaginatedResponse<GcfListItem> => ({
@@ -100,7 +103,23 @@ export type GcfListItem = {
   } | null;
   taxonomyDistribution: Record<string, number>;
   taxonomyDistributionByRank: TaxonomyDistributionByRank;
+  /** Taxa per rank before the list trim to each rank's top 20. */
+  taxonomyTaxaCountByRank?: Partial<Record<TaxonomyRank, number>>;
   lengthStats: GcfLengthStats | null;
+  // Family share fields. All absent together when the index predates
+  // the patch -- see mapShareFields in gcf-browse-mapper.ts. Never default them:
+  // an absent share is "not indexed yet", not 0 %.
+  /** {antiSMASH product: % of primary members carrying it}, 2 dp, overlapping. */
+  productTypeMemberShare?: Record<string, number>;
+  /** Products carried by >= 10 / 50 / 90 % of primary members. */
+  productTypesAtLeast?: ShareThresholdSets;
+  /** Per GOLD level: ecosystems holding >= T % of the members WITH a level-n ecosystem. */
+  ecosystemsAtLeastByLevel?: Record<number, ShareThresholdSets>;
+  /** Per GOLD level: % of primary members that have an ecosystem at that level. */
+  ecosystemResolvedPctByLevel?: Record<number, number | null>;
+  /** Per GOLD level: the dominant ecosystem and its % of RESOLVED members (1 dp --
+   *  never compare it with a threshold; use ecosystemsAtLeastByLevel). */
+  dominantEcosystemByLevel?: Record<number, { ecosystem: string; pct: number | null } | null>;
 };
 
 export type UseGcfsParams = {
@@ -146,7 +165,7 @@ export function useGcfs(params: UseGcfsParams = {}): HookResult<GcfListItem> {
   const { enabled = true, ...queryParams } = params;
   const url = `/api/gcfs${buildQueryString(queryParams as Record<string, unknown>)}`;
 
-  const { data, error, isLoading, isFetching, isFetched } = useQuery({
+  const { data, error, isLoading, isFetching, isFetched, refetch } = useQuery({
     queryKey: queryKeys.gcfs.list(queryParams),
     queryFn: ({ signal }) => apiGet<PaginatedResponse<GcfListItem>>(url, { signal }),
     placeholderData: keepPreviousData,
@@ -155,13 +174,14 @@ export function useGcfs(params: UseGcfsParams = {}): HookResult<GcfListItem> {
   });
 
   if (error) {
-    const message = (error as Error).message ?? 'Failed to load GCFs';
+    const message = (error as Error).message ?? "Couldn't load GCFs";
     return {
       data: { ...createEmptyResponse({ limit: queryParams.limit, offset: queryParams.offset }), success: false, message },
       isLoading,
       isFetching,
       error: error as Error,
       hasLoaded: isFetched,
+      refetch: () => { void refetch(); },
     };
   }
 
@@ -171,5 +191,6 @@ export function useGcfs(params: UseGcfsParams = {}): HookResult<GcfListItem> {
     isFetching,
     error: null,
     hasLoaded: isFetched,
+    refetch: () => { void refetch(); },
   };
 }

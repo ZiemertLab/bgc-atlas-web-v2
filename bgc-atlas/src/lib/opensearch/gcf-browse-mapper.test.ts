@@ -80,4 +80,53 @@ describe('mapGcfBrowseDocument', () => {
   it('yields null lengthStats for a document indexed before the field existed', () => {
     expect(mapGcfBrowseDocument({ gcf_id: 'x' }).lengthStats).toBeNull();
   });
+
+  describe('share fields', () => {
+    // GCF-v2b6-035292 as gcf_scalar_patch.py writes it: empty threshold arrays
+    // are ABSENT, product_type_member_share is always present.
+    const patched = {
+      gcf_id: 'baa7a7d4-85ec-589b-a6dc-490322226d50',
+      product_type_member_share: { 'RiPP-like': 99.96, hserlactone: 0.03, 'lanthipeptide-class-iv': 0.01 },
+      product_types_ge10: ['RiPP-like'],
+      product_types_ge50: ['RiPP-like'],
+      product_types_ge90: ['RiPP-like'],
+      eco_l3_ge10: ['Marine', 'Respiratory system'],
+      resolved_pct_l1: 99.3,
+      resolved_pct_l3: 63.11,
+      resolved_pct_l5: 4.37,
+      dom_ecosystem_l3: 'Marine',
+      max_pct_l3: 34.6,
+    };
+
+    it('maps the shares, thresholds, resolved share and dominant ecosystem per level', () => {
+      const row = mapGcfBrowseDocument(patched);
+      expect(row.productTypeMemberShare).toEqual({
+        'RiPP-like': 99.96, hserlactone: 0.03, 'lanthipeptide-class-iv': 0.01,
+      });
+      expect(row.productTypesAtLeast).toEqual({ 10: ['RiPP-like'], 50: ['RiPP-like'], 90: ['RiPP-like'] });
+      expect(row.ecosystemsAtLeastByLevel?.[3]).toEqual({ 10: ['Marine', 'Respiratory system'], 50: [], 90: [] });
+      expect(row.ecosystemResolvedPctByLevel).toEqual({ 1: 99.3, 2: null, 3: 63.11, 4: null, 5: 4.37 });
+      expect(row.dominantEcosystemByLevel?.[3]).toEqual({ ecosystem: 'Marine', pct: 34.6 });
+      expect(row.dominantEcosystemByLevel?.[4]).toBeNull();
+    });
+
+    it('reads an absent threshold array as "nothing clears it" once the index has the fields', () => {
+      const row = mapGcfBrowseDocument({ gcf_id: 'x', product_type_member_share: {} });
+      expect(row.productTypeMemberShare).toEqual({});
+      expect(row.productTypesAtLeast).toEqual({ 10: [], 50: [], 90: [] });
+      expect(row.ecosystemsAtLeastByLevel?.[1]).toEqual({ 10: [], 50: [], 90: [] });
+    });
+
+    it('sets none of them on a document from before the patch', () => {
+      // An unpatched index still carries dom_ecosystem_l3/max_pct_l3. Mapping
+      // them alone would let a reader take "no L2 dominant" for a fact.
+      const row = mapGcfBrowseDocument({
+        gcf_id: 'x', dom_ecosystem_l3: 'Marine', max_pct_l3: 34.6, eco_l3_ge10: ['Marine'],
+      });
+      for (const key of ['productTypeMemberShare', 'productTypesAtLeast', 'ecosystemsAtLeastByLevel',
+        'ecosystemResolvedPctByLevel', 'dominantEcosystemByLevel']) {
+        expect(row).not.toHaveProperty(key);
+      }
+    });
+  });
 });

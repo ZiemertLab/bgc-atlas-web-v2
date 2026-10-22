@@ -3,12 +3,13 @@
 import { apiFetch, withBase } from "@/lib/basePath";
 import Link from 'next/link';
 import Image from 'next/image';
-import { useSearchParams, usePathname, useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { Suspense, useState, useEffect, Fragment, useMemo, useRef, useCallback } from 'react';
 import { MainLayout } from '@/components/layout/main-layout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ResizableTable } from '@/components/ui/resizable-table';
 import { Search, Loader2, ChevronDown, ChevronRight, List, Map, Filter } from 'lucide-react';
 import { sampleExportPath, useSamples, useAssemblies } from '@/lib/hooks/use-samples';
@@ -22,23 +23,29 @@ import { Pagination } from '@/components/ui/pagination';
 import { SampleCharts } from '@/components/statistics/SampleCharts';
 import { getEnvironmentColor, formatBiomeLabel } from '@/lib/utils/metadata-parser';
 import { formatGOLDBreadcrumb, getGOLDBadgeClass } from '@/lib/utils/gold-parser';
-import { GOLD_BUCKET_LABEL, GOLD_BUCKET_ORDER } from '@/lib/utils/gold-buckets';
+import { GOLD_BUCKET_LABEL, GOLD_BUCKET_ORDER, goldBucketLabel } from '@/lib/utils/gold-buckets';
 import { formatDataSourceName } from '@/lib/utils/data-source-name';
 import { ExportMenu } from '@/components/ui/export-menu';
+import { ListErrorState } from '@/components/ui/list-error-state';
 import { downloadText, exportFilename, serializeExport, type ExportFormat } from '@/lib/export/format';
 import { METAGENOME_EXPORT_COLUMNS } from '@/lib/export/sample-columns';
 import { ASSEMBLY_VIEW_EXPORT_REFUSAL, SAMPLE_TEXT_FILTER_EXPORT_REFUSAL } from '@/lib/export/refusal-messages';
 import { MetadataDetails } from '@/components/ui/metadata-details';
 import { AssemblyDetails } from '@/components/ui/assembly-details';
 import { SampleMapDots } from '@/components/ui/sample-map-dots';
+import type { AreaLinks } from '@/components/ui/sample-map-dots.client';
+import { METAGENOME_AREA_LINKS } from '@/lib/utils/map-area-links';
 import { SampleEnvironmentalPanel } from '@/components/ui/sample-environmental-panel';
 import { SampleStudiesPanel } from '@/components/ui/sample-studies-panel';
 import { BiomeLegend } from '@/components/ui/biome-legend';
-import { FilterChips } from '@/components/ui/filter-chips';
+import { FilterChips, type FilterChip } from '@/components/ui/filter-chips';
+import { appliedFilterValue, formatAreaLabel, formatRangeLabel, optionLabel } from '@/lib/filter-chip-labels';
 import { AdvancedFilterDrawer } from '@/components/filters/advanced-filter-drawer';
 import { SampleGcfCount, SAMPLE_GCF_HEADER_TOOLTIP } from '@/components/ui/sample-gcf-count';
 import { SampleDataSourceLinks } from '@/components/ui/sample-data-source-links';
 import { RefetchFrame } from '@/components/ui/refetch-frame';
+import { isDeepPageRefusal, isFilterRefusal } from '@/lib/api-client';
+import { useLastKnown } from '@/lib/hooks/use-last-known';
 import { StudyScopeChip } from '@/components/ui/study-scope-chip';
 import { sampleFilterFields } from '@/lib/filters/field-definitions';
 import { sampleFilterRecipes } from '@/lib/filters/recipes';
@@ -55,22 +62,84 @@ import {
   advancedFilterRequestParam,
   unreadableAdvancedFilterParam,
 } from '@/lib/filters/advanced-filter-param';
+import { readNumber, readOneOf, readPage, readPageSize, type UrlEntry } from '@/lib/url-state';
+import { useExternalNavigationKey, useMirrorToUrl } from '@/lib/hooks/use-mirror-to-url';
 
 export default function SamplesPage() {
   return (
     <Suspense fallback={null}>
-      <SamplesPageInner />
+      <SamplesPageKeyed />
     </Suspense>
   );
 }
 
+/** Remounts the page on a same-route navigation it did not write, so it re-seeds
+ *  from the URL like a fresh visit (see useMirrorToUrl). */
+function SamplesPageKeyed() {
+  const navKey = useExternalNavigationKey();
+  return <SamplesPageInner key={navKey} />;
+}
+
+/** The page sizes both Pagination controls offer; a `size` outside them reads as the default. */
+const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
+/** The environment Select's "no filter" item; never a ?goldBucket= value. */
+const ALL_ENVIRONMENTS = '__all__';
+
+/** Every column the samples table can sort by (the API's sortFieldMap). */
+const SAMPLE_SORT_FIELDS = [
+  'id', 'dataSource', 'assemblies', 'bgcs', 'gcfs', 'location', 'biome', 'environment',
+  'material', 'feature', 'host', 'study',
+] as const;
+/** The subset the assemblies view can sort by; /api/assemblies falls back to bgcs for the rest. */
+const ASSEMBLY_SORT_FIELDS = ['bgcs', 'location', 'biome', 'environment', 'material', 'feature', 'host'] as const;
+const DEFAULT_SORT_FIELD = 'bgcs';
+const DEFAULT_SORT_ORDER = 'desc' as const;
+const sortFieldsFor = (entity: 'samples' | 'assemblies'): readonly string[] =>
+  entity === 'assemblies' ? ASSEMBLY_SORT_FIELDS : SAMPLE_SORT_FIELDS;
+
+const BBOX_URL_KEYS = ['latMin', 'latMax', 'lonMin', 'lonMax'] as const;
+
+/** `?view=assemblies` (the home page's assemblies stat) opens the assemblies rows. */
+const readEntity = (raw: string): 'samples' | 'assemblies' =>
+  raw === 'assemblies' ? 'assemblies' : 'samples';
+
 function SamplesPageInner() {
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [goldBucketFilter, setGoldBucketFilter] = useState('');
+  const searchParams = useSearchParams();
+  const paramOr = (key: string, fallback = '') => searchParams.get(key) ?? fallback;
+
+  // Every filter, the sort, the paging and the two view toggles are seeded from
+  // the URL in useState initializers, so the first request already carries
+  // them. useMirrorToUrl below writes them back and is the page's only URL
+  // writer. A same-route navigation it did not write (the nav item's bare
+  // /samples, Back to another filtered entry) remounts this component through
+  // SamplesPageKeyed, so it seeds again from the new URL.
+  //
+  // Names other pages link with are kept: id (a BGC's sample link), view=assemblies
+  // (the home page's assemblies stat), studyKey (a study's Samples panel), and the
+  // map's area keys latMin..lonMax + goldBucket. Table vs map is `display`, so it
+  // cannot collide with `view`.
+  const [entityMode, setEntityMode] = useState(() => readEntity(paramOr('view')));
+  const [viewMode, setViewMode] = useState<'table' | 'map'>(
+    () => (paramOr('display') === 'map' ? 'map' : 'table'),
+  );
+  const [currentPage, setCurrentPage] = useState(() => readPage(paramOr('page')));
+  const [pageSize, setPageSize] = useState(() =>
+    readPageSize(paramOr('size'), PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE),
+  );
+  const [searchTerm, setSearchTerm] = useState(() => paramOr('search'));
+  // RAW, not checked against GOLD_BUCKET_ORDER: the API refuses an unknown
+  // bucket with a 400 that names it (parseGoldBucket), so a stale homepage deep
+  // link says so instead of answering the whole corpus. Dropping it here would
+  // undo that, and the mirror would erase the evidence from the URL. Filters the
+  // server refuses are forwarded as they arrived, like advancedFilters; only
+  // sort, order, page, size and the view toggles are validated here, since a
+  // junk value of those cannot widen the result.
+  const [goldBucketFilter, setGoldBucketFilter] = useState(() => paramOr('goldBucket'));
   // Exact key from ?studyKey=; the `study` column filter matches titles, and 710 titles are shared by several studies.
-  const [studyKeyFilter, setStudyKeyFilter] = useState('');
+  // Trimmed, as /genome-collections does: a key is an identifier, so stray
+  // whitespace from a pasted link is never part of it.
+  const [studyKeyFilter, setStudyKeyFilter] = useState(() => paramOr('studyKey').trim());
   const [mounted, setMounted] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [expandedAssemblies, setExpandedAssemblies] = useState<Set<string>>(new Set());
@@ -85,38 +154,55 @@ function SamplesPageInner() {
     });
   }, []);
   const [activeTab, setActiveTab] = useState<Record<string, string>>({});
-  const [sortField, setSortField] = useState('bgcs');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [viewMode, setViewMode] = useState<'table' | 'map'>('table');
-  const [entityMode, setEntityMode] = useState<'samples' | 'assemblies'>('samples');
-  const searchParams = useSearchParams();
-  const pathname = usePathname();
-  const router = useRouter();
+  // Validated against the entity the link opens in: the assemblies view sorts
+  // by fewer columns, and the URL must not claim an order the server drops.
+  const [sortField, setSortField] = useState<string>(() =>
+    readOneOf(
+      paramOr('sort'),
+      sortFieldsFor(readEntity(paramOr('view'))),
+      DEFAULT_SORT_FIELD,
+    ),
+  );
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(
+    () => readOneOf(paramOr('order'), ['asc', 'desc'] as const, DEFAULT_SORT_ORDER),
+  );
 
-  const [showFilters, setShowFilters] = useState<Record<string, boolean>>({});
-  const [filterId, setFilterId] = useState('');
-  const [filterBiome, setFilterBiome] = useState('');
-  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState('');
-  const [filterEnvText, setFilterEnvText] = useState('');
-  const [filterMaterial, setFilterMaterial] = useState('');
-  const [filterFeature, setFilterFeature] = useState('');
-  const [filterHost, setFilterHost] = useState('');
-  const [filterDataSource, setFilterDataSource] = useState('');
-  const [filterStudy, setFilterStudy] = useState('');
-  const [latMin, setLatMin] = useState<string>('');
-  const [latMax, setLatMax] = useState<string>('');
-  const [lonMin, setLonMin] = useState<string>('');
-  const [lonMax, setLonMax] = useState<string>('');
-  const [assembliesMin, setAssembliesMin] = useState<string>('');
-  const [assembliesMax, setAssembliesMax] = useState<string>('');
-  const [bgcsMin, setBgcsMin] = useState<string>('');
-  const [bgcsMax, setBgcsMax] = useState<string>('');
-  const [gcfsMin, setGcfsMin] = useState<string>('');
-  const [gcfsMax, setGcfsMax] = useState<string>('');
+  const [filterId, setFilterId] = useState(() => paramOr('id'));
+  const [filterBiome, setFilterBiome] = useState(() => paramOr('biome'));
+  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState(() => paramOr('goldEcosystem'));
+  const [filterEnvText, setFilterEnvText] = useState(() => paramOr('environment'));
+  const [filterMaterial, setFilterMaterial] = useState(() => paramOr('material'));
+  const [filterFeature, setFilterFeature] = useState(() => paramOr('feature'));
+  const [filterHost, setFilterHost] = useState(() => paramOr('host'));
+  const [filterDataSource, setFilterDataSource] = useState(() => paramOr('dataSource'));
+  const [filterStudy, setFilterStudy] = useState(() => paramOr('study'));
+  const [latMin, setLatMin] = useState<string>(() => readNumber(paramOr('latMin')));
+  const [latMax, setLatMax] = useState<string>(() => readNumber(paramOr('latMax')));
+  const [lonMin, setLonMin] = useState<string>(() => readNumber(paramOr('lonMin')));
+  const [lonMax, setLonMax] = useState<string>(() => readNumber(paramOr('lonMax')));
+  const [assembliesMin, setAssembliesMin] = useState<string>(() => readNumber(paramOr('assembliesMin')));
+  const [assembliesMax, setAssembliesMax] = useState<string>(() => readNumber(paramOr('assembliesMax')));
+  const [bgcsMin, setBgcsMin] = useState<string>(() => readNumber(paramOr('bgcsMin')));
+  const [bgcsMax, setBgcsMax] = useState<string>(() => readNumber(paramOr('bgcsMax')));
+  const [gcfsMin, setGcfsMin] = useState<string>(() => readNumber(paramOr('gcfsMin')));
+  const [gcfsMax, setGcfsMax] = useState<string>(() => readNumber(paramOr('gcfsMax')));
+  // A map area link opens with the location filter showing, as before.
+  const [showFilters, setShowFilters] = useState<Record<string, boolean>>(() => ({
+    location: BBOX_URL_KEYS.some((k) => readNumber(paramOr(k)) !== ''),
+  }));
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const [advancedFilters, setAdvancedFilters] = useState<FilterGroup | null>(null);
-  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState<FilterGroup>(() => createDefaultFilterGroup());
-  const [unreadableAdvancedParam, setUnreadableAdvancedParam] = useState<string | null>(null);
+  // Seeded, not synced in by an effect: the FIRST request has to carry it (or
+  // its unreadable raw value, forwarded so the server refuses it), or the page
+  // answers corpus-wide once before the filter arrives.
+  const [advancedFilters, setAdvancedFilters] = useState<FilterGroup | null>(
+    () => deserializeFilterGroup(paramOr('advancedFilters')) ?? null,
+  );
+  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState<FilterGroup>(
+    () => deserializeFilterGroup(paramOr('advancedFilters')) ?? createDefaultFilterGroup(),
+  );
+  const [unreadableAdvancedParam, setUnreadableAdvancedParam] = useState<string | null>(
+    () => unreadableAdvancedFilterParam(paramOr('advancedFilters')),
+  );
   const hasAdvancedFiltersApplied = hasFilterRules(advancedFilters);
   const hasDraftAdvancedFilters = hasFilterRules(advancedFiltersDraft);
   const advancedFiltersEncoded = useMemo(
@@ -157,68 +243,24 @@ function SamplesPageInner() {
     return () => { cancelled = true; };
   }, []);
 
-  const advancedFiltersParam = searchParams.get('advancedFilters');
-  useEffect(() => {
-    if (!advancedFiltersParam) {
-      setAdvancedFilters(null);
-      setUnreadableAdvancedParam(null);
-      return;
-    }
-    const parsed = deserializeFilterGroup(advancedFiltersParam);
-    if (parsed) {
-      setAdvancedFilters(parsed);
-      setAdvancedFiltersDraft(parsed);
-      setUnreadableAdvancedParam(null);
-    } else {
-      setAdvancedFilters(null);
-      // Forwarded verbatim so the server refuses it; dropping it made a truncated link return the whole corpus.
-      setUnreadableAdvancedParam(unreadableAdvancedFilterParam(advancedFiltersParam));
-    }
-  }, [advancedFiltersParam]);
-
-  // Seed bbox + GOLD bucket from the URL once on mount so later user edits aren't clobbered.
-  const didSeedGeoRef = useRef(false);
-  useEffect(() => {
-    if (didSeedGeoRef.current) return;
-    didSeedGeoRef.current = true;
-    const qLatMin = searchParams.get('latMin');
-    const qLatMax = searchParams.get('latMax');
-    const qLonMin = searchParams.get('lonMin');
-    const qLonMax = searchParams.get('lonMax');
-    const qGold = searchParams.get('goldBucket');
-    const qStudyKey = searchParams.get('studyKey');
-    if (qLatMin) setLatMin(qLatMin);
-    if (qLatMax) setLatMax(qLatMax);
-    if (qLonMin) setLonMin(qLonMin);
-    if (qLonMax) setLonMax(qLonMax);
-    if (qGold) setGoldBucketFilter(qGold);
-    if (qStudyKey) setStudyKeyFilter(qStudyKey);
-    if (qLatMin || qLatMax || qLonMin || qLonMax) {
-      setShowFilters((prev) => ({ ...prev, location: true }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const updateAdvancedFiltersInUrl = (encoded: string) => {
-    if (!pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    if (encoded) {
-      params.set('advancedFilters', encoded);
-    } else {
-      params.delete('advancedFilters');
-    }
-    const query = params.toString();
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
-  };
-
-  // Also drop it from the URL so a copied link or reload doesn't re-apply it.
+  // Dropping the study scope drops it from the URL too (through the mirror), so a
+  // copied link or a reload doesn't silently re-apply the filter just cleared.
   const clearStudyKey = () => {
     setStudyKeyFilter('');
-    if (!pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete('studyKey');
-    const query = params.toString();
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
+    setCurrentPage(0);
+  };
+
+  const clearIdFilter = () => {
+    setFilterId('');
+    setCurrentPage(0);
+  };
+
+  const clearAreaFilter = () => {
+    setLatMin('');
+    setLatMax('');
+    setLonMin('');
+    setLonMax('');
+    setCurrentPage(0);
   };
 
   const applyAdvancedFilters = () => {
@@ -228,7 +270,6 @@ function SamplesPageInner() {
     setUnreadableAdvancedParam(null);
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl(serializeFilterGroup(nextFilters));
   };
 
   const clearAdvancedFilters = () => {
@@ -237,7 +278,6 @@ function SamplesPageInner() {
     setAdvancedFiltersDraft(createDefaultFilterGroup());
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl('');
   };
 
   const clearAllFilters = () => {
@@ -265,14 +305,6 @@ function SamplesPageInner() {
     setGcfsMax('');
     clearAdvancedFilters();
     setCurrentPage(0);
-    // One replace for both URL filters: clearAdvancedFilters' own replace would put ?studyKey= back.
-    if (pathname) {
-      const params = new URLSearchParams(searchParams.toString());
-      params.delete('advancedFilters');
-      params.delete('studyKey');
-      const query = params.toString();
-      router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
-    }
   };
 
   const hasAnyColumnFilter =
@@ -452,23 +484,6 @@ function SamplesPageInner() {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const idParam = params.get('id');
-      if (idParam) {
-        setFilterId(idParam);
-        setViewMode('table');
-        setCurrentPage(0);
-      }
-      if (params.get('view') === 'assemblies') {
-        setEntityMode('assemblies');
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
-
   const sampleFilterParams = {
     goldBucket: goldBucketFilter || undefined,
     biome: dBiome || undefined,
@@ -505,6 +520,48 @@ function SamplesPageInner() {
     setCurrentPage(0);
   }
   const offset = (pagedUnder === filterSignature ? currentPage : 0) * pageSize;
+
+  // The page's ONE URL writer (see useMirrorToUrl). Text and range filters are
+  // mirrored DEBOUNCED, as they are sent, so the URL names the rows on screen
+  // rather than a half-typed word. The advanced filter is the value forwarded,
+  // so an unreadable link keeps its evidence in the URL and the server goes on
+  // refusing it. Column widths and visibility, expanded rows and their tabs
+  // stay out: they describe the display, not the result set.
+  useMirrorToUrl(
+    [
+      ['search', dSearch],
+      ['goldBucket', goldBucketFilter],
+      ['studyKey', studyKeyFilter],
+      ['id', dId],
+      ['biome', dBiome],
+      ['goldEcosystem', dGoldEcosystem],
+      ['environment', dEnvText],
+      ['material', dMaterial],
+      ['feature', dFeature],
+      ['host', dHost],
+      ['dataSource', dDataSource],
+      ['study', dStudy],
+      ['latMin', dLatMin],
+      ['latMax', dLatMax],
+      ['lonMin', dLonMin],
+      ['lonMax', dLonMax],
+      ['assembliesMin', dAsmMin],
+      ['assembliesMax', dAsmMax],
+      ['bgcsMin', dBgcMin],
+      ['bgcsMax', dBgcMax],
+      ['gcfsMin', dGcfMin],
+      ['gcfsMax', dGcfMax],
+      ['advancedFilters', advancedFiltersRequestParam ?? ''],
+      ['sort', sortField, DEFAULT_SORT_FIELD],
+      ['order', sortOrder, DEFAULT_SORT_ORDER],
+      ['page', currentPage + 1, 1],
+      ['size', pageSize, DEFAULT_PAGE_SIZE],
+      ['view', entityMode === 'assemblies' ? 'assemblies' : ''],
+      ['display', viewMode === 'map' ? 'map' : ''],
+    ] satisfies UrlEntry[],
+    mounted,
+  );
+
   const sampleQueryParams = { limit: pageSize, offset, ...sampleFilterParams };
 
   const mapFilterParams = {
@@ -535,23 +592,25 @@ function SamplesPageInner() {
   };
 
   // Unfiltered, the map serves the static snapshot; any filter uses the live query so the dots match the table.
-  const mapHasActiveFilters = Boolean(
-    mapFilterParams.goldBucket || mapFilterParams.biome || mapFilterParams.goldEcosystem ||
-    mapFilterParams.search || mapFilterParams.id || mapFilterParams.environmentText ||
-    mapFilterParams.material || mapFilterParams.feature || mapFilterParams.host ||
-    mapFilterParams.dataSource || mapFilterParams.study || mapFilterParams.studyKey ||
-    mapFilterParams.latMin !== undefined || mapFilterParams.latMax !== undefined ||
-    mapFilterParams.lonMin !== undefined || mapFilterParams.lonMax !== undefined ||
-    mapFilterParams.assembliesMin !== undefined || mapFilterParams.assembliesMax !== undefined ||
-    mapFilterParams.bgcsMin !== undefined || mapFilterParams.bgcsMax !== undefined ||
-    mapFilterParams.advancedFilters
+  // Every key but the fixed source type is a filter, so this is derived rather than
+  // listed: a hand-kept list left out gcfsMin/gcfsMax, and a "# GCFs" range alone
+  // showed the unfiltered snapshot beside a filtered table.
+  const mapHasActiveFilters = Object.entries(mapFilterParams).some(
+    ([key, value]) => key !== 'sourceType' && value !== undefined && value !== null && value !== '',
   );
 
   // Both hooks always run (rules of hooks); the inactive one is disabled so it sends no request.
   const samplesQuery = useSamples({ ...sampleQueryParams, enabled: entityMode === 'samples' });
   const assembliesQuery = useAssemblies({ ...sampleQueryParams, enabled: entityMode === 'assemblies' });
-  const { data, isLoading, isFetching, error, hasLoaded: samplesLoaded } =
+  const { data, isLoading, isFetching, error, hasLoaded: samplesLoaded, refetch } =
     entityMode === 'assemblies' ? assembliesQuery : samplesQuery;
+  // The pager's total under a deep-page refusal (see pagerShown below). Called
+  // here, above the !mounted early return, as a hook must be.
+  const pagerItems = useLastKnown(
+    error ? 0 : (data?.data?.total || 0),
+    !error,
+    JSON.stringify({ entityMode, ...sampleFilterParams }),
+  );
 
   const { data: statisticsData, isLoading: statsLoading } = useStatistics('metagenome');
 
@@ -610,17 +669,33 @@ function SamplesPageInner() {
   const handleEntityModeChange = (mode: 'samples' | 'assemblies') => {
     setEntityMode(mode);
     setCurrentPage(0);
-    if (mode === 'assemblies' && (sortField === 'assemblies' || sortField === 'id')) {
-      setSortField('bgcs');
-      setSortOrder('desc');
+    // A sort the assemblies view cannot honour goes back to the default, so the
+    // URL never claims an order /api/assemblies drops.
+    if (!sortFieldsFor(mode).includes(sortField)) {
+      setSortField(DEFAULT_SORT_FIELD);
+      setSortOrder(DEFAULT_SORT_ORDER);
     }
-    try {
-      const sp = new URLSearchParams(window.location.search);
-      if (mode === 'assemblies') sp.set('view', 'assemblies');
-      else sp.delete('view');
-      router.replace(`${pathname}${sp.toString() ? `?${sp.toString()}` : ''}`);
-    } catch { /* ignore */ }
   };
+
+  // "View samples" on this page's own map narrows this list to the box (and the
+  // legend's bucket, when one is picked) and shows the table, keeping the other
+  // filters the dots were drawn under. A link to /samples?box from /samples
+  // would remount the page as a fresh visit and drop them.
+  const applyMapArea = useCallback((box: URLSearchParams) => {
+    setLatMin(box.get('latMin') ?? '');
+    setLatMax(box.get('latMax') ?? '');
+    setLonMin(box.get('lonMin') ?? '');
+    setLonMax(box.get('lonMax') ?? '');
+    const bucket = readOneOf(box.get('goldBucket') ?? '', GOLD_BUCKET_ORDER);
+    if (bucket) setGoldBucketFilter(bucket);
+    setShowFilters((prev) => ({ ...prev, location: true }));
+    setViewMode('table');
+    setCurrentPage(0);
+  }, []);
+  const mapAreaLinks = useMemo<AreaLinks>(
+    () => ({ ...METAGENOME_AREA_LINKS, onViewSamples: applyMapArea }),
+    [applyMapArea],
+  );
 
   const handleSort = (columnId: string, direction: 'asc' | 'desc') => {
     setSortField(columnId);
@@ -653,9 +728,16 @@ function SamplesPageInner() {
     );
   }
 
-  const samples = data?.data?.data || [];
-  const total = data?.data?.total || 0;
-  const totalPages = Math.ceil(total / pageSize);
+  // Nothing from a failed request reaches the table, the counts or the export:
+  // the error state below stands in for all of them.
+  const samples = error ? [] : (data?.data?.data || []);
+  const total = error ? 0 : (data?.data?.total || 0);
+
+  // Under a deep-page refusal the pager stays, at the last total the list
+  // reported, so the reader can step back; any other error hides it, where
+  // "Showing 1–0 of 0" would read as an empty result.
+  const pagerShown = !error || isDeepPageRefusal(error);
+  const pagerPages = Math.ceil(pagerItems / pageSize);
   const statistics = statisticsData?.data || null;
 
   const hasAnyFilter = Boolean(searchTerm || goldBucketFilter || studyKeyFilter || hasAnyColumnFilter || hasAdvancedFiltersApplied);
@@ -667,7 +749,7 @@ function SamplesPageInner() {
         <div className="text-sm space-y-1">
           <p>No matches for your search criteria:</p>
           {searchTerm && <p className="font-mono bg-muted px-2 py-1 rounded inline-block">&quot;{searchTerm}&quot;</p>}
-          {goldBucketFilter && <p className="font-mono bg-muted px-2 py-1 rounded inline-block">{GOLD_BUCKET_LABEL[goldBucketFilter as keyof typeof GOLD_BUCKET_LABEL] ?? goldBucketFilter}</p>}
+          {goldBucketFilter && <p className="font-mono bg-muted px-2 py-1 rounded inline-block">{goldBucketLabel(goldBucketFilter)}</p>}
           <p>Try different keywords or clear filters</p>
         </div>
       ) : (
@@ -1093,34 +1175,94 @@ function SamplesPageInner() {
       ? SAMPLE_TEXT_FILTER_EXPORT_REFUSAL
       : null;
 
-  if (error) {
-    return (
-      <MainLayout>
-        <div className="w-full py-8">
-          <div className="border border-border bg-card py-12 text-center">
-            <h3 className="mb-2 text-base font-semibold text-destructive">
-              Error loading metagenomes
-            </h3>
-            {/* The server's own message: a refused filter names the field to fix. */}
-            <p className="mx-auto max-w-prose text-sm text-muted-foreground">
-              {error.message}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => window.location.reload()}
-              className="mt-4"
-            >
-              Retry
-            </Button>
-          </div>
-        </div>
-      </MainLayout>
-    );
-  }
-
   const fmt = (value?: number | null): string =>
     statsLoading ? '—' : (value ?? 0).toLocaleString();
+
+  // Every active filter gets a chip, column filters included: a copied link can
+  // carry ?host= or ?bgcsMin= while that filter row is closed, its column is
+  // hidden or the page is in map view, and nothing else on screen would say the
+  // table is narrowed. Values are the APPLIED ones (what the request sends), see
+  // appliedFilterValue.
+  const ap = appliedFilterValue;
+  const filterChipsList: FilterChip[] = [
+    { key: 'search', label: 'Search', value: ap(searchTerm, dSearch), onRemove: () => setSearchTerm('') },
+    {
+      key: 'goldBucket',
+      label: 'Environment',
+      value: goldBucketFilter
+        ? goldBucketLabel(goldBucketFilter)
+        : '',
+      onRemove: () => setGoldBucketFilter(''),
+    },
+    {
+      key: 'id',
+      label: entityMode === 'assemblies' ? 'Assembly' : 'Sample ID',
+      value: ap(filterId, dId),
+      onRemove: clearIdFilter,
+    },
+    {
+      key: 'dataSource',
+      label: 'Data source',
+      value: ap(filterDataSource, dDataSource) && optionLabel(dataSourceOptions, dDataSource),
+      onRemove: () => setFilterDataSource(''),
+    },
+    {
+      key: 'assemblies',
+      label: 'Assemblies',
+      value: formatRangeLabel(ap(assembliesMin, dAsmMin), ap(assembliesMax, dAsmMax)),
+      onRemove: () => { setAssembliesMin(''); setAssembliesMax(''); },
+    },
+    {
+      key: 'bgcs',
+      label: 'BGCs',
+      value: formatRangeLabel(ap(bgcsMin, dBgcMin), ap(bgcsMax, dBgcMax)),
+      onRemove: () => { setBgcsMin(''); setBgcsMax(''); },
+    },
+    {
+      key: 'gcfs',
+      label: 'GCFs',
+      value: formatRangeLabel(ap(gcfsMin, dGcfMin), ap(gcfsMax, dGcfMax)),
+      onRemove: () => { setGcfsMin(''); setGcfsMax(''); },
+    },
+    {
+      key: 'area',
+      label: 'Area',
+      value: formatAreaLabel({
+        latMin: ap(latMin, dLatMin),
+        latMax: ap(latMax, dLatMax),
+        lonMin: ap(lonMin, dLonMin),
+        lonMax: ap(lonMax, dLonMax),
+      }),
+      onRemove: clearAreaFilter,
+    },
+    { key: 'biome', label: 'Biome', value: ap(filterBiome, dBiome), onRemove: () => setFilterBiome('') },
+    {
+      key: 'goldEcosystem',
+      label: 'GOLD Ecosystem',
+      value: ap(filterGoldEcosystem, dGoldEcosystem),
+      onRemove: () => setFilterGoldEcosystem(''),
+    },
+    {
+      // Not "Environment": that is the bucket chip above. This is the
+      // Environment column's free-text match.
+      key: 'environment',
+      label: 'Environment (text)',
+      value: ap(filterEnvText, dEnvText),
+      onRemove: () => setFilterEnvText(''),
+    },
+    { key: 'material', label: 'Material', value: ap(filterMaterial, dMaterial), onRemove: () => setFilterMaterial('') },
+    { key: 'feature', label: 'Feature', value: ap(filterFeature, dFeature), onRemove: () => setFilterFeature('') },
+    { key: 'host', label: 'Host', value: ap(filterHost, dHost), onRemove: () => setFilterHost('') },
+    { key: 'study', label: 'Study', value: ap(filterStudy, dStudy), onRemove: () => setFilterStudy('') },
+    ...(hasAdvancedFiltersApplied
+      ? advancedFilterSummaries.map((summary, index) => ({
+          key: `advanced-${index}`,
+          label: 'Advanced',
+          value: summary,
+          onRemove: clearAdvancedFilters,
+        }))
+      : []),
+  ].filter((chip) => chip.value);
 
   return (
     <MainLayout>
@@ -1175,12 +1317,16 @@ function SamplesPageInner() {
           </dl>
         </section>
 
-        <section className="mb-8">
-          <SampleCharts
-            {...statsFilters}
-            staticManifestUrl="/data/sample-charts.manifest.json"
-          />
-        </section>
+        {/* A refused filter suppresses the section (the charts return null for
+            their own refusal; this drops the empty section's margin too). */}
+        {!isFilterRefusal(error) && (
+          <section className="mb-8">
+            <SampleCharts
+              {...statsFilters}
+              staticManifestUrl="/data/sample-charts.manifest.json"
+            />
+          </section>
+        )}
 
         <section className="mb-3">
           <div className="section-label mb-2.5">Filter</div>
@@ -1200,19 +1346,39 @@ function SamplesPageInner() {
               />
             </div>
 
-            <select
-              value={goldBucketFilter}
-              onChange={(e) => setGoldBucketFilter(e.target.value)}
-              aria-label="Environment filter"
-              className="h-8 rounded-sm border border-input bg-card px-2 text-[13px]"
+            {/* ALL_ENVIRONMENTS stands in for no filter: Radix refuses '' as
+                an item value. It is not 'all' (as /bgcs uses), because
+                ?goldBucket=all is a plausible stale link and must show as
+                itself. A value outside GOLD_BUCKET_ORDER (a refused link)
+                gets its own item, so the control shows what the server
+                refused instead of claiming "All environments". */}
+            <Select
+              value={goldBucketFilter || ALL_ENVIRONMENTS}
+              onValueChange={(val) => setGoldBucketFilter(val === ALL_ENVIRONMENTS ? '' : val)}
             >
-              <option value="">All environments</option>
-              {GOLD_BUCKET_ORDER.map((bucket) => (
-                <option key={bucket} value={bucket}>
-                  {GOLD_BUCKET_LABEL[bucket]}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                size="sm"
+                aria-label="Environment filter"
+                className="w-[180px] text-[13px]"
+              >
+                <SelectValue placeholder="All environments" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_ENVIRONMENTS}>All environments</SelectItem>
+                {goldBucketFilter &&
+                  goldBucketFilter !== ALL_ENVIRONMENTS &&
+                  !(GOLD_BUCKET_ORDER as string[]).includes(goldBucketFilter) && (
+                    <SelectItem value={goldBucketFilter}>
+                      {goldBucketLabel(goldBucketFilter)}
+                    </SelectItem>
+                  )}
+                {GOLD_BUCKET_ORDER.map((bucket) => (
+                  <SelectItem key={bucket} value={bucket}>
+                    {GOLD_BUCKET_LABEL[bucket]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
             <Button
               variant={hasAdvancedFiltersApplied ? 'default' : 'outline'}
@@ -1282,38 +1448,7 @@ function SamplesPageInner() {
 
         <FilterChips
           className="mb-6"
-          filters={[
-            ...(searchTerm
-              ? [{
-                  key: 'search',
-                  label: 'Search',
-                  value: searchTerm,
-                  onRemove: () => {
-                    setSearchTerm('');
-                    setCurrentPage(0);
-                  }
-                }]
-              : []),
-            ...(goldBucketFilter
-              ? [{
-                  key: 'environment',
-                  label: 'Environment',
-                  value: GOLD_BUCKET_LABEL[goldBucketFilter as keyof typeof GOLD_BUCKET_LABEL] ?? goldBucketFilter,
-                  onRemove: () => {
-                    setGoldBucketFilter('');
-                    setCurrentPage(0);
-                  }
-                }]
-              : []),
-            ...(hasAdvancedFiltersApplied
-              ? advancedFilterSummaries.map((summary, index) => ({
-                  key: `advanced-${index}`,
-                  label: 'Advanced',
-                  value: summary,
-                  onRemove: clearAdvancedFilters,
-                }))
-              : []),
-          ]}
+          filters={filterChipsList}
           onClearAll={clearAllFilters}
         />
 
@@ -1340,33 +1475,47 @@ function SamplesPageInner() {
             )}
           </div>
 
-          {viewMode === 'table' && !tableLoading && total > 0 && (
+          {viewMode === 'table' && pagerShown && !tableLoading && pagerItems > 0 && (
             <div className="mb-4">
               <Pagination
                 currentPage={currentPage}
-                totalPages={totalPages}
-                totalItems={total}
+                totalPages={pagerPages}
+                totalItems={pagerItems}
                 pageSize={pageSize}
                 offset={offset}
                 onPageChange={handlePageChange}
                 onPageSizeChange={handlePageSizeChange}
-                pageSizeOptions={[5, 10, 25, 50, 100]}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
               />
             </div>
           )}
 
           <div>
-            {viewMode === 'map' ? (
+            {viewMode === 'map' && error && isFilterRefusal(error) ? (
+              // The map reads the same filters. Shown in place of it, so a
+              // refused filter never leaves the static snapshot's unfiltered
+              // dots on screen as if they matched.
+              <ListErrorState error={error} noun="metagenomes" onRetry={refetch} retrying={isFetching} />
+            ) : viewMode === 'map' ? (
               mapHasActiveFilters ? (
                 <SampleMapDots
                   params={{
                     ...mapFilterParams,
                     enabled: viewMode === 'map',
                   }}
+                  areaLinks={mapAreaLinks}
                 />
               ) : (
-                <SampleMapDots staticManifestUrl="/data/map-samples.manifest.json" />
+                <SampleMapDots staticManifestUrl="/data/map-samples.manifest.json" areaLinks={mapAreaLinks} />
               )
+            ) : error ? (
+              <ListErrorState
+                error={error}
+                noun="metagenomes"
+                onRetry={refetch}
+                retrying={isFetching}
+                onFirstPage={() => setCurrentPage(0)}
+              />
             ) : tableLoading ? (
               <div className="space-y-6">
                 <ColdLoadHint loading={tableLoading} label="Loading metagenomes" />
@@ -1460,17 +1609,17 @@ function SamplesPageInner() {
           </div>
         </section>
 
-        {viewMode === 'table' && (
+        {viewMode === 'table' && pagerShown && (!error || pagerItems > 0) && (
           <div className="mt-6">
             <Pagination
               currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={total}
+              totalPages={pagerPages}
+              totalItems={pagerItems}
               pageSize={pageSize}
               offset={offset}
               onPageChange={handlePageChange}
               onPageSizeChange={handlePageSizeChange}
-              pageSizeOptions={[5, 10, 25, 50, 100]}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
             />
           </div>
         )}

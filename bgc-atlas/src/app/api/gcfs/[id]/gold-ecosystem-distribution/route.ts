@@ -11,8 +11,9 @@ import {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * GOLD ecosystem distribution for a GCF. Separate from /api/gcfs/[id] because it
- * feeds a collapsed section. Served from a terms aggregation on bgc_browse;
+ * GOLD ecosystem distribution for a GCF (every full path, split into levels).
+ * Separate from /api/gcfs/[id] because it feeds a collapsed section. Served from
+ * a terms aggregation on bgc_browse;
  * topPathsFromSql is the fallback for when the index is disabled or unreachable.
  */
 export async function GET(
@@ -28,7 +29,7 @@ export async function GET(
   }
 
   try {
-    const distribution = await getOrSetCache(`gcf:${id}:gold-ecosystem-distribution`, async () => {
+    const distribution = await getOrSetCache(`gcf:${id}:gold-ecosystem-distribution:v3`, async () => {
       const rows = await topPaths(id);
       const totalBgcs = rows.reduce((sum, r) => sum + r.bgc_count, 0);
       return rows.map((row) => {
@@ -69,7 +70,7 @@ async function topPaths(id: string): Promise<GoldPathCount[]> {
 }
 
 /**
- * The same top-50 paths from PostgreSQL. Slow on large families: it looks up
+ * The same paths from PostgreSQL. Slow on large families: it looks up
  * every member BGC in `bgcs` for its assembly, one cold read each —
  * ~155 s for a 92k-member family — so it is the fallback, not the normal path.
  */
@@ -100,8 +101,12 @@ async function topPathsFromSql(id: string): Promise<GoldPathCount[]> {
       FROM asm_paths ap
       JOIN fam_asm fa ON fa.assembly_id = ap.assembly_id
       GROUP BY ap.gold_ecosystem_path
+      -- Every path, no LIMIT: shares are taken over these rows, so the top 50 alone
+      -- made each level's percentages a share of those 50 and dropped the rest
+      -- (GCF c83196fc: 9 of its 27 level-2 ecosystems). The aggregate already
+      -- covered every path; only the rows sent were cut. Even the largest family
+      -- has a few hundred.
       ORDER BY bgc_count DESC
-      LIMIT 50
     `);
   }, { timeout: 120000, maxWait: 20000 });
   return rows;

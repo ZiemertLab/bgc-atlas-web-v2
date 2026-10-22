@@ -8,6 +8,9 @@ import { FeedbackDialog } from '@/components/layout/feedback-dialog';
 import { CitationCards } from '@/components/ui/citation';
 import { useStatistics } from '@/lib/hooks/use-statistics';
 import { useDataSourceStats, type DataSourceStat } from '@/lib/hooks/use-data-source-stats';
+import { CURRENT_CLUSTERING } from '@/lib/clustering';
+
+const CLUSTERING_FIGURES = CURRENT_CLUSTERING.figures;
 
 export default function AboutPage() {
   const { data: statisticsData, isLoading: statsLoading } = useStatistics();
@@ -122,20 +125,22 @@ export default function AboutPage() {
                   <span className="font-mono text-[13px] text-foreground">
                     GCF-F-…
                   </span>
-                  ). 373,360 seed and 256,512 fragmented families are{' '}
+                  ). {CLUSTERING_FIGURES.listedSeedFamilies.toLocaleString('en-US')} seed and{' '}
+                  {CLUSTERING_FIGURES.listedFragmentedFamilies.toLocaleString('en-US')} fragmented families are{' '}
                   <IntA href="/gcfs">listed</IntA>.
                 </p>
                 <p>
-                  89.4% of BGCs fall into a family. The rest are mostly regions
+                  {CLUSTERING_FIGURES.clusteredPercent}% of BGCs fall into a family. The rest are mostly regions
                   truncated at a contig edge — short fragments with too little to
                   match on, rather than novel chemistry.
                 </p>
                 <p>
-                  A BGC can sit in more than one family: 2,366,096 do. Each one has
+                  A BGC can sit in more than one family:{' '}
+                  {CLUSTERING_FIGURES.multiFamilyBgcs.toLocaleString('en-US')} do. Each one has
                   a primary family, and the others are listed beside it.
                 </p>
                 <p>
-                  1,335 listed families contain a{' '}
+                  {CLUSTERING_FIGURES.mibigAnchoredFamilies.toLocaleString('en-US')} listed families contain a{' '}
                   <ExtA href="https://mibig.secondarymetabolites.org/">MIBiG</ExtA>{' '}
                   reference cluster and carry the name of the compound it makes.
                 </p>
@@ -177,8 +182,8 @@ export default function AboutPage() {
               <ExtA href="https://creativecommons.org/licenses/by/4.0/">
                 CC BY 4.0
               </ExtA>
-              . Use it for anything, including commercially, provided you cite the
-              resource.
+              . You may share and adapt it for any purpose, including commercial
+              use, provided you credit BGC Atlas by citing it.
             </p>
             <p>
               The underlying assemblies and genomes are not ours to relicense. They
@@ -203,7 +208,7 @@ export default function AboutPage() {
               <ExtA href="https://uni-tuebingen.de/fakultaeten/mathematisch-naturwissenschaftliche-fakultaet/fachbereiche/interfakultaere-einrichtungen/imit/arbeitsgruppen/translational-genome-mining-for-natural-products/">
                 Translational Genome Mining for Natural Products
               </ExtA>{' '}
-              group at the{' '}
+              group, led by Prof. Nadine Ziemert, at the{' '}
               <ExtA href="https://uni-tuebingen.de/en/">University of Tübingen</ExtA>
               . The full list of contributors is in the citations above.
             </p>

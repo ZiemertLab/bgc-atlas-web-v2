@@ -3,6 +3,7 @@
 import { apiFetch } from "@/lib/basePath";
 import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface AntismashExtractionStatusProps {
   runId: string;
@@ -25,6 +26,8 @@ export function AntismashExtractionStatus({
 }: AntismashExtractionStatusProps) {
   const [status, setStatus] = useState<ExtractionStatus>(initialStatus);
   const [message, setMessage] = useState<string | null>(null);
+  // Bumped by "Try again" to run the effect afresh.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!hasArchive) {
@@ -42,6 +45,11 @@ export function AntismashExtractionStatus({
 
     let isCancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The server holds a running extraction in memory, so after a restart it answers
+    // 'idle' for one it was in the middle of. That used to read as "still going" and
+    // the page polled forever; now it asks for the extraction again, once.
+    let restarted = false;
+    const STOPPED = 'The extraction stopped before it finished.';
 
     // Extraction can take minutes; start it and poll, so a dropped connection does not lose the
     // result. The server keeps extracting regardless.
@@ -82,6 +90,22 @@ export function AntismashExtractionStatus({
         const payload = await response.json().catch(() => null);
         if (isCancelled) return;
         if (applyTerminal(payload, 'Failed to extract archive.')) return;
+        if (payload?.status === 'idle') {
+          if (!restarted) {
+            restarted = true;
+            void extract();
+          } else {
+            setStatus('error');
+            setMessage(STOPPED);
+          }
+          return;
+        }
+        // A 400/404 carries no status; it will not turn into one by waiting.
+        if (!response.ok && typeof payload?.status !== 'string') {
+          setStatus('error');
+          setMessage('Failed to extract archive.');
+          return;
+        }
         setMessage(describe(payload));
       } catch {
         // a failed poll is not a failed extraction — keep waiting
@@ -115,7 +139,7 @@ export function AntismashExtractionStatus({
       isCancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, hasArchive, initialStatus, initialIndexRelativePath, initialRegionsRelativePath, onReady]);
+  }, [runId, hasArchive, initialStatus, initialIndexRelativePath, initialRegionsRelativePath, onReady, attempt]);
 
   let icon = null;
   let toneClass = 'text-muted-foreground';
@@ -142,6 +166,11 @@ export function AntismashExtractionStatus({
                 ? 'Archive extracted.'
                 : 'Checking archive status...')}
         </span>
+        {status === 'error' && (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={() => setAttempt((n) => n + 1)}>
+            Try again
+          </Button>
+        )}
       </div>
     </div>
   );

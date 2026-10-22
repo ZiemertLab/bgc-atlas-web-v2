@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Plus, Trash2, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { validateSample } from '@/lib/metadata/validation';
-import { FIELD_METADATA, RECOMMENDED_FIELDS, ALL_FIELD_NAMES } from '@/lib/metadata/constants';
+import { FIELD_METADATA, RECOMMENDED_FIELDS, ALL_FIELD_NAMES, NUMERIC_FIELDS } from '@/lib/metadata/constants';
 import type { SampleMetadata, BatchValidationResult } from '@/lib/metadata/types';
 
 interface MetadataFormProps {
@@ -292,7 +292,7 @@ export function MetadataForm({ onSamplesChange, onValidationChange }: MetadataFo
                               value={fieldValue ? String(fieldValue) : ''}
                               onChange={(e) => updateSample(index, fieldName as keyof SampleMetadata, e.target.value)}
                             />
-                          ) : typeof fieldValue === 'number' || fieldName.includes('latitude') || fieldName.includes('longitude') || fieldName.includes('temperature') || fieldName.includes('ph') || fieldName.includes('meters') || fieldName.includes('precipitation') || fieldName.includes('salinity') || fieldName.includes('taxid') ? (
+                          ) : NUMERIC_FIELDS.has(fieldName) ? (
                             <Input
                               type="number"
                               step="any"

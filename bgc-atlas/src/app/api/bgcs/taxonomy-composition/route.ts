@@ -4,7 +4,7 @@ import { buildBrowseFilters, supportsBrowseSearch } from '@/lib/opensearch/brows
 import {
   buildCompositionRequest, isTaxonomyRank, parseCompositionResponse,
 } from '@/lib/opensearch/taxonomy-composition';
-import { filterRefusalResponse } from '@/lib/api/filter-refusal';
+import { bgcFilterRefusal, filterRefusalResponse } from '@/lib/api/filter-refusal';
 import { serverError } from '@/lib/api/errors';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +22,11 @@ export async function GET(req: NextRequest) {
 
   // Both gates hide the panel rather than summarise a different set than the
   // table's SQL fallback would list.
+  // Before either gate, a sourceType, goldBucket or completeness value /api/bgcs
+  // refuses gets the same 400 here, so the panel never describes a different set
+  // than the table.
+  const badFilter = bgcFilterRefusal(params);
+  if (badFilter) return badFilter;
   if (!isBrowseSearchEnabled('bgcs')) {
     return NextResponse.json({ supported: false, reason: 'browse-index-disabled' });
   }

@@ -7,8 +7,9 @@ import { cn } from '@/lib/utils';
 
 interface FragmentedBadgeProps {
   /**
-   * `hover` (default): a Tooltip. `tap`: a Popover for the narrow card layout, since
-   * Radix tooltips ignore touch pointer moves and can never be opened by touch.
+   * `hover` (default): a {@link TooltipBadge}, which opens on hover, keyboard focus and
+   * tap. `tap`: a Popover for the narrow card layout, where the few sentences read better
+   * as body text in a padded panel than in an 11px tooltip bubble.
    */
   trigger?: 'hover' | 'tap';
   className?: string;

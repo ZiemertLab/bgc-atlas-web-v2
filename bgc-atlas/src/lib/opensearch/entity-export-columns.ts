@@ -6,6 +6,7 @@ import { mapGcfBrowseDocument } from '@/lib/opensearch/gcf-browse-mapper';
 import { mapSampleBrowseDocument } from '@/lib/opensearch/sample-browse-mapper';
 import { formatBgcLength } from '@/lib/utils/bgc-length';
 import { formatBiomeLabel } from '@/lib/utils/metadata-parser';
+import { formatMemberShares } from '@/lib/gcf/share-display';
 
 /** One aggregation bucket, plus the family-scope measurements when the query was scoped. */
 export interface EntityExportInput {
@@ -82,9 +83,14 @@ export const GCF_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'product_categories', label: 'Categories' },
   // Shares by exact combination ('NRPS+PKS'), a partition; not overlapping per-category shares.
   { key: 'product_category_distribution', label: 'Category distribution (% of members)' },
+  // Same serializer and label as the /gcfs export's column.
+  { key: 'product_type_member_share', label: 'Product types (% of members)' },
   { key: 'top_phylum', label: 'Top phylum' },
   { key: 'top_genus', label: 'Top genus' },
-  { key: 'biome_l1', label: 'Ecosystem (L1)' },
+  // Of the members WITH an L1 ecosystem, as on /gcfs; the next column is how
+  // many members that is.
+  { key: 'biome_l1', label: 'Ecosystem (L1, % of members with an L1 ecosystem)' },
+  { key: 'ecosystem_resolved_l1', label: 'Members with an L1 ecosystem (%)' },
   { key: 'avg_distance', label: 'Avg. distance' },
   { key: 'mibig_compounds', label: 'MIBiG compounds' },
 ];
@@ -127,11 +133,13 @@ export function toGcfExportRow(input: EntityExportInput): Row {
     family_class: gcf.familyClass ?? '',
     product_categories: gcf.productCategories,
     product_category_distribution: topShares(gcf.productCategoryDistribution),
+    product_type_member_share: formatMemberShares(gcf.productTypeMemberShare),
     top_phylum: topTaxon(byRank.phylum ?? gcf.taxonomyDistribution),
     top_genus: topTaxon(byRank.genus),
     // Verbatim keys, as `BiomeDistributionChart` draws them: `formatBiomeLabel` would merge
     // `Host-associated` with the synthetic `Host-assoc.: Plants` bucket.
     biome_l1: topShares(gcf.biomeDistributionByLevel?.[1]),
+    ecosystem_resolved_l1: gcf.ecosystemResolvedPctByLevel?.[1] ?? '',
     // Three decimals, as the Avg Distance column renders it.
     avg_distance: gcf.avgDistance === null ? '' : gcf.avgDistance.toFixed(3),
     mibig_compounds: gcf.mibigCompounds,

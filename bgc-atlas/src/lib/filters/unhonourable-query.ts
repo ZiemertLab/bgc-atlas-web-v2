@@ -2,6 +2,7 @@
 // set and answer a broader question at HTTP 200. Shared by the OpenSearch and SQL
 // builders. The message names field and operator so a stale shared link can be repaired.
 import type { UnhonouredCondition } from '@/lib/filters/types';
+import { describeThresholdRefusal } from '@/lib/filters/share-fields';
 
 const describeCondition = (u: UnhonouredCondition): string => {
   switch (u.reason) {
@@ -10,6 +11,11 @@ const describeCondition = (u: UnhonouredCondition): string => {
     case 'unsupported_operator':
       return `field "${u.field}" does not support operator "${u.operator}"`
         + (u.supportedOperators?.length ? ` (supported: ${u.supportedOperators.join(', ')})` : '');
+    case 'not_indexed':
+      return `field "${u.field}": any member is not available on this index yet`
+        + ' (choose 10, 50 or 90 %, or retry in a minute)';
+    case 'unsupported_threshold':
+      return describeThresholdRefusal(u.field, u.threshold, u.supportedThresholds ?? []);
     default:
       return `field "${u.field}" cannot use value ${JSON.stringify(u.value ?? null)}`
         + ` with operator "${u.operator}"`;

@@ -39,6 +39,7 @@ const fullBgc = (): ExportableBgc => ({
   sampleLabels: ['ERS000001'],
   dataSourceNames: ['gtdb', 'mgnify'],
   category: 'NRPS',
+  categories: ['NRPS'],
   products: ['NRPS', 'T1PKS'],
   completeness: 'complete',
   biomeLevels: ['root:Environmental:Terrestrial:Soil'],

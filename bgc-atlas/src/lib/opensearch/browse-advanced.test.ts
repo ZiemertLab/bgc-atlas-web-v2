@@ -187,7 +187,9 @@ const NEGATABLE: Record<BrowseEntity, string[]> = {
     'lat', 'lon', 'sourceType',
   ],
   gcfs: [
-    'id', 'name', 'productType', 'biome', 'productClass', 'taxonomy', 'memberBgcCount', 'assemblyCount', 'completeBgcCount', 'taxaCount',
+    'id', 'name', 'productType', 'biome', 'productShare',
+    'ecoShareL1', 'ecoShareL2', 'ecoShareL3', 'ecoShareL4', 'ecoShareL5',
+    'taxonomy', 'memberBgcCount', 'assemblyCount', 'completeBgcCount', 'taxaCount',
     'productCategoryCount', 'studyCount', 'ecosystemSpecificity',
     'domEcosystemPct', 'domPhylumPct', 'domEcosystem', 'domPhylum', 'mibigAnchored',
     'familyClass', 'avgScore', 'avgDistance',

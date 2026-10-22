@@ -9,7 +9,7 @@ import { getProductCategoryBadgeStyle, getTaxonomyBadgeStyle } from '@/lib/utils
 import { formatGOLDBreadcrumb, getGOLDBadgeClass } from '@/lib/utils/gold-parser';
 import { getTaxonDisplayName, formatTaxonomyBreadcrumb } from '@/lib/utils/taxonomy-utils';
 import { sampleBrowseHref, sampleBrowseLabel } from '@/lib/utils/sample-link';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { TaxonomyBadge } from '@/components/ui/taxonomy-badge';
 import type { BgcListItem, BgcTableContextValue } from './bgc-table-types';
 import { BgcSourceCell } from './bgc-source-cell';
 import { useDataSourceOptions } from '@/lib/hooks/use-data-source-options';
@@ -228,7 +228,6 @@ export function useBgcTableColumns(context: BgcTableContextValue) {
       filterOptions: [
         { label: 'complete', value: 'complete' },
         { label: 'partial', value: 'partial' },
-        { label: 'unknown', value: 'unknown' }
       ],
       visible: columnVisibility.completeness,
       renderCell: (bgc: BgcListItem) => (
@@ -337,20 +336,7 @@ export function useBgcTableColumns(context: BgcTableContextValue) {
 
         return (
           <div className="max-w-full">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge
-                  variant={badgeStyle ? 'secondary' : 'outline'}
-                  className="text-xs max-w-full whitespace-normal h-auto"
-                  style={badgeStyle}
-                >
-                  {displayName}
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[440px]">
-                <p className="text-xs leading-relaxed">{fullPath}</p>
-              </TooltipContent>
-            </Tooltip>
+            <TaxonomyBadge name={displayName} lineage={fullPath} style={badgeStyle} className="text-xs" />
           </div>
         );
       }

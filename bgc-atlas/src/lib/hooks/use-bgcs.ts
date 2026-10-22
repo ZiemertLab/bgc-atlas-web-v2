@@ -12,6 +12,8 @@ type HookResult<T> = {
   isFetching: boolean;
   error: Error | null;
   hasLoaded: boolean;
+  /** Re-run the query (the list's Retry). */
+  refetch: () => void;
 };
 
 export type BgcListItem = {
@@ -122,6 +124,8 @@ export type UseBgcsParams = {
   lonMin?: string;
   lonMax?: string;
   goldBucket?: string;
+  /** Assembly source type: metagenome | MAG | SAG | isolate. */
+  sourceType?: string;
   advancedFilters?: string;
 };
 
@@ -152,7 +156,7 @@ export function useBgcs(params: UseBgcsParams = {}): HookResult<BgcListItem> {
 
   const url = `/api/bgcs${buildQueryString(normalizedParams)}`;
 
-  const { data, error, isLoading, isFetching, isFetched } = useQuery({
+  const { data, error, isLoading, isFetching, isFetched, refetch } = useQuery({
     queryKey: queryKeys.bgcs.list(normalizedParams),
     queryFn: ({ signal }) => apiGet<PaginatedResponse<BgcListItem>>(url, { signal }),
     placeholderData: keepPreviousData,
@@ -160,13 +164,14 @@ export function useBgcs(params: UseBgcsParams = {}): HookResult<BgcListItem> {
   });
 
   if (error) {
-    const message = (error as Error).message ?? 'Failed to load BGCs';
+    const message = (error as Error).message ?? "Couldn't load BGCs";
     return {
       data: { ...createEmptyResponse({ limit: params.limit, offset: params.offset }), success: false, message },
       isLoading,
       isFetching,
       error: error as Error,
       hasLoaded: isFetched,
+      refetch: () => { void refetch(); },
     };
   }
 
@@ -176,5 +181,6 @@ export function useBgcs(params: UseBgcsParams = {}): HookResult<BgcListItem> {
     isFetching,
     error: null,
     hasLoaded: isFetched,
+    refetch: () => { void refetch(); },
   };
 }

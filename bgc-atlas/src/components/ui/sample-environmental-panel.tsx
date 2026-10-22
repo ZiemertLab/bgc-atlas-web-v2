@@ -5,7 +5,6 @@ import { Card, CardContent } from '@/components/ui/card';
 import { StatRow } from '@/components/ui/stat-leader-row';
 import { Sample } from '@/lib/types';
 import { parseGOLDPath } from '@/lib/utils/gold-parser';
-import type { GOLDMetadata } from '@/lib/types/gold-types';
 import { hasCoordinates, formatCoordinates } from '@/lib/utils/coordinates';
 import { SampleLocationMap } from '@/components/ui/sample-location-map';
 import { SampleMeasurementsPanel } from '@/components/ui/sample-measurements-panel';
@@ -55,16 +54,7 @@ export function SampleEnvironmentalPanel({ sample }: SampleEnvironmentalPanelPro
     ? parseGOLDPath(sample.goldEcosystemPath, sample.goldEcosystemMetadata)
     : null;
   if (gold?.fullPath.length) {
-    const confidence = (sample.goldEcosystemMetadata as GOLDMetadata | null | undefined)?.confidence;
-    classification.push({
-      label: 'GOLD ecosystem',
-      value: (
-        <>
-          {gold.fullPath.join(' › ')}
-          {confidence ? <span className="ml-1.5 text-xs text-muted-foreground">({confidence})</span> : null}
-        </>
-      ),
-    });
+    classification.push({ label: 'GOLD ecosystem', value: gold.fullPath.join(' › ') });
   }
   const biome = sample.primaryBiome ?? sample.environmentBiome;
   if (present(biome)) classification.push({ label: 'Biome', value: biome });

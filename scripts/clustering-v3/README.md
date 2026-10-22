@@ -53,6 +53,9 @@ clustering's numbers — with no error and no empty state.
 | artefact | rebuild with | symptom if skipped |
 |---|---|---|
 | `gcf_taxonomy_distribution_mv` (a plain TABLE) | `backfill_taxonomy_dist.sql`, then **ANALYZE** | /gcfs shows "No data" on every row |
+| `gcf_taxonomy_counts` | `build_gcf_taxonomy_counts.sql` (also after any `bgc_taxonomy` change) | the family Taxonomy panel falls back to scanning members per request: slow, and a 500 for medium-sized families on a cold cache |
+| `study_gcf` / `gcf_study_count` | the studies precompute (`scripts/populator/tools/study_bgc_summary`), **before** the gcf browse corpus | /studies/&lt;id&gt; lists no families; `build_browse_corpus.py` refuses to build on the previous clustering's study tables |
+| saved BiG-SLiCE results | delete `bigslice_search_sessions` created before the cutover (results cascade) and their session directories, by literal id | their hits name families that no longer exist |
 | `gcf_route_counts_mv` | `REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_route_counts_mv` | "Assignment statistics" shows the old routes, or the panel hides on families that now have derived members |
 | the three browse indexes | `build_browse_corpus.py` + versioned reindex + alias promote | gcf/bgc/sample lists serve stale families |
 | `bgc_facets` | `resolve_facets.py` + versioned index + alias swap (`scripts/populator/tools/`) | Property Search filters and the distance histogram answer from the old clustering |

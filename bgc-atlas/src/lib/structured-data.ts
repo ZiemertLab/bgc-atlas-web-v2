@@ -7,6 +7,16 @@ const SITE_URL =
 // The site-wide Dataset declared in app/layout.tsx; shared so consumers merge the nodes.
 export const SITE_DATASET_ID = `${SITE_URL}/#dataset`;
 
+// Who built the atlas, as /about says in prose. Google checks `creator` (a recommended field) on
+// every Dataset node it parses -- the site-wide one, each entity's and the nested `isPartOf`
+// stub -- so all three carry this object. On a study page it names the atlas's derived data,
+// not the sequencing study.
+export const SITE_CREATOR = {
+  '@type': 'Organization',
+  name: 'Translational Genome Mining for Natural Products, University of Tübingen',
+  url: 'https://uni-tuebingen.de/fakultaeten/mathematisch-naturwissenschaftliche-fakultaet/fachbereiche/interfakultaere-einrichtungen/imit/arbeitsgruppen/translational-genome-mining-for-natural-products/',
+} as const;
+
 export interface Variable {
   name: string;
   /** bigint (a Postgres count()) is normalized below; JSON.stringify throws on it. */
@@ -53,7 +63,9 @@ export function entityDataset({
       url: SITE_URL,
       description:
         'An atlas of biosynthetic gene clusters and the gene cluster families they form.',
+      creator: SITE_CREATOR,
     },
+    creator: SITE_CREATOR,
     publisher: {
       '@type': 'Organization',
       name: 'University of Tübingen',

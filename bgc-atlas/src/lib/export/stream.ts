@@ -11,7 +11,7 @@ import { NextResponse } from 'next/server';
 
 import { filterRefusalResponse } from '@/lib/api/filter-refusal';
 import { cancelBodyOnAbort, isHead } from '@/lib/http/abandoned-body';
-import { checkRateLimit, exportRateLimit, getClientIp } from '@/lib/rate-limit';
+import { bucketLimitText, checkRateLimit, exportRateLimit, getClientIp } from '@/lib/rate-limit';
 import {
   EXPORT_MIME,
   EXPORT_ROW_CAP,
@@ -164,7 +164,7 @@ async function checkExport<T>(
     const remaining = await exportRateLimit.getRemaining(getClientIp(request));
     if (remaining.remaining <= 0) {
       const minutes = Math.max(1, Math.ceil((remaining.reset - Date.now()) / 60_000));
-      return answer({ ok: false, reason: `Export limit reached (20 an hour). Try again in ${minutes} min.` });
+      return answer({ ok: false, reason: `Export limit reached (${bucketLimitText('export', 'exports')}). Try again in ${minutes} min.` });
     }
   } catch (error) {
     // The download enforces the limit itself; a check that cannot read it says go.

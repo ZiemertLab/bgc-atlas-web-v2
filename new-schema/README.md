@@ -20,7 +20,7 @@ indexes and keys exist. It replaces the numbered migrations that built that
 schema, which interleave data loads with schema changes and do not replay on an
 empty database.
 
-**New schema changes** go in `migrations/` as numbered files from `0127_`
+**New schema changes** go in `migrations/` as numbered files from `0157_`
 onwards, applied in order with
 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f <file>`. There is no runner and no
 tracking table.

@@ -70,7 +70,8 @@ const defs: Def[] = [
   num('num_protoclusters', '# Protoclusters', REGION),
   opt('candidate_kind', 'Candidate-cluster kind', REGION,
     ['single', 'chemical_hybrid', 'interleaved', 'neighbouring']),
-  num('gc_content', 'GC content', REGION),
+  // gc_content is not offered: no writer fills it, so it is empty on all 16.1M
+  // BGCs and every condition on it matched nothing. Add it back with its data.
   kw('detection_rules', 'Detection rule', REGION),
   txt('contig', 'Contig', REGION),
   kw('tax_domain', 'Domain', TAX, { allowedOperators: KW_TEXT_OPS }),

@@ -37,8 +37,13 @@ def main():
         rc.close()
 
     if not row:
-        print(json.dumps({"results": [], "totalMatches": 0}))
-        return
+        # BiG-SLiCE has just reported success for this query, so its report must
+        # exist. Printing an empty result here turned a failed run into "completed,
+        # 0 matches" -- and the duplicate check then served that to every later
+        # upload of the same files. A report with no rows below is still a real,
+        # empty answer.
+        sys.stderr.write("no BiG-SLiCE report named %r in %s\n" % (query_name, reports_db))
+        sys.exit(3)
 
     report_db = os.path.join(output_dir, "reports", str(row[0]), "data.db")
     conn = sqlite3.connect("file:%s?mode=ro" % report_db, uri=True)

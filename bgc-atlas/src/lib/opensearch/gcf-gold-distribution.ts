@@ -17,8 +17,15 @@ export interface GoldPathCount {
   bgc_count: number;
 }
 
-/** Top-N paths by member BGC count, matching the SQL's ORDER BY ... LIMIT. */
-export function buildGcfGoldDistributionRequest(gcfId: string, limit = 50): Record<string, unknown> {
+/**
+ * Every path a family's members carry. The corpus holds 877 distinct GOLD paths,
+ * so 1,000 buckets is all of them. It was the top 50, and the route takes each
+ * level's shares over the rows it gets: on GCF c83196fc that dropped 18 of its 27
+ * level-2 ecosystems and made the shares of the rest a share of 50 paths.
+ */
+export const GOLD_PATH_BUCKETS = 1000;
+
+export function buildGcfGoldDistributionRequest(gcfId: string, limit = GOLD_PATH_BUCKETS): Record<string, unknown> {
   return {
     size: 0,
     query: {

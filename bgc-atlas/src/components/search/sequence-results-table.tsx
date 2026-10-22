@@ -26,7 +26,9 @@ import { ContigMap, DEFAULT_STACK_GROUPS } from '@/components/search/contig-map'
 import { SampleMapDots } from '@/components/ui/sample-map-dots';
 import { useSequenceMapSamples } from '@/lib/hooks/use-sequence-map-samples';
 import { useContigMap, type ContigLocus } from '@/lib/hooks/use-contig-map';
-import { withBase } from '@/lib/basePath';
+import { apiFetch, withBase } from '@/lib/basePath';
+import { storeJob } from '@/lib/utils/job-cookies';
+import { GbkExportDialog } from '@/components/ui/gbk-export-dialog';
 import { ResizableTable, type TableColumn } from '@/components/ui/resizable-table';
 import { Pagination } from '@/components/ui/pagination';
 
@@ -56,6 +58,22 @@ interface ActiveFilters {
   minIdentity?: number;
   minCoverage?: number;
 }
+
+/**
+ * A clicked locus as a hit filter: its span, and the contig it is on. In a multi-FASTA
+ * nucleotide search the contigs share coordinates, so the span alone would match hits at
+ * those positions on every contig. A hit's query_id is its contig.
+ */
+interface LocusFilter {
+  queryFrom?: number;
+  queryTo?: number;
+  queryId?: string;
+}
+
+const locusFilter = (locus: ContigLocus | null): LocusFilter =>
+  locus
+    ? { queryFrom: locus.start, queryTo: locus.end, ...(locus.queryId ? { queryId: locus.queryId } : {}) }
+    : {};
 
 /** NCBI's bit-score banding, as a BLAST report colours hits. */
 function BitScore({ value, className }: { value: number; className?: string }) {
@@ -101,7 +119,7 @@ function GroupAlignments({
   sessionId: string;
   group: SequenceSearchGroup;
   /** undefined means no filter beyond the search's own. */
-  filters: ActiveFilters;
+  filters: ActiveFilters & LocusFilter;
   isNucleotideQuery: boolean;
 }) {
   const [openAlignments, setOpenAlignments] = useState<Set<string>>(new Set());
@@ -240,6 +258,7 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
   // The thresholds DIAMOND already applied.
   const [floors, setFloors] = useState<Filters | null>(null);
   const [selectedLocus, setSelectedLocus] = useState<ContigLocus | null>(null);
+  const locus = useMemo(() => locusFilter(selectedLocus), [selectedLocus]);
   // Owned here: the bit-score legend moves into the table when the map is closed.
   const [mapOpen, setMapOpen] = useState(true);
   // The query only runs once opened; it is computed per request.
@@ -289,8 +308,7 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
     totalGroups,
   } = useSequenceSearch(sessionId, {
     ...activeFilters,
-    queryFrom: selectedLocus?.start,
-    queryTo: selectedLocus?.end,
+    ...locus,
     limit: pageSize,
     offset: page * pageSize,
     sortBy,
@@ -526,11 +544,7 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
 
   const sampleMap = useSequenceMapSamples(
     sessionId,
-    {
-      ...activeFilters,
-      queryFrom: selectedLocus?.start,
-      queryTo: selectedLocus?.end,
-    },
+    { ...activeFilters, ...locus },
     sampleMapOpen
   );
 
@@ -558,7 +572,15 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
     setExporting(true);
     setExportError(null);
     try {
-      const res = await fetch(withBase(`/api/search/sequence/${sessionId}/export`));
+      // The same filters as the table and the GBK zip.
+      const query = new URLSearchParams();
+      if (activeFilters.minIdentity !== undefined) query.set('minIdentity', String(activeFilters.minIdentity));
+      if (activeFilters.minCoverage !== undefined) query.set('minCoverage', String(activeFilters.minCoverage));
+      if (locus.queryFrom !== undefined) query.set('queryFrom', String(locus.queryFrom));
+      if (locus.queryTo !== undefined) query.set('queryTo', String(locus.queryTo));
+      if (locus.queryId !== undefined) query.set('queryId', locus.queryId);
+      const qs = query.toString();
+      const res = await fetch(withBase(`/api/search/sequence/${sessionId}/export${qs ? `?${qs}` : ''}`));
       if (!res.ok) {
         const detail = await res.json().catch(() => null);
         throw new Error(detail?.error || `Export failed (${res.status})`);
@@ -578,7 +600,28 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
     } finally {
       setExporting(false);
     }
-  }, [sessionId]);
+  }, [sessionId, activeFilters.minIdentity, activeFilters.minCoverage, locus]);
+
+  // GBK zip: a recorded export job (gcf_export_jobs, kind 'regions') on the export queue,
+  // like the property-search and GCF exports. It packages the BGCs under the filters on
+  // screen, so what is downloaded is what the table and map describe.
+  const [gbkDialogOpen, setGbkDialogOpen] = useState(false);
+  const createGbkExport = async (email: string | undefined): Promise<string> => {
+    const res = await apiFetch(`/api/search/sequence/${sessionId}/export-gbk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        filters: { ...activeFilters, ...locus },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.exportJobId) throw new Error(data.error || 'Failed to start GBK export');
+    const count = Number(data.count) || 0;
+    storeJob(String(data.exportJobId), 'export',
+      `GBK export · ${count.toLocaleString()} region${count === 1 ? '' : 's'}`);
+    return String(data.exportJobId);
+  };
 
   if (isLoading && !groups) {
     return (
@@ -599,7 +642,12 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
     );
   }
 
-  if (!groups || groups.length === 0) {
+  // The whole-page message is for a search with no hits at all. When filters, a locus or
+  // a page past the end leave nothing to show, the table area says so and the controls
+  // stay: replacing them too left the reader nothing to undo it with but a reload.
+  const noRowsHere = !groups || groups.length === 0;
+  const lastPage = Math.max(1, Math.ceil(totalGroups / pageSize));
+  if (noRowsHere && !isFiltered && totalGroups === 0 && page === 0) {
     return (
       <div className="py-12 text-center">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground" />
@@ -614,8 +662,10 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
   return (
     <div className="space-y-4">
       {session && (
-        <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-4">
-          <div className="flex items-center gap-4">
+        // Wraps: at phone width the facts and the two download buttons cannot share a row,
+        // and without wrapping the buttons were pushed off-screen.
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 p-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-success" />
               <span className="font-medium">Search Completed</span>
@@ -642,12 +692,18 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
           </div>
           {/* Server-side, so the CSV covers the whole session, not just the loaded page. */}
           <div className="flex flex-col items-end gap-1">
-            <Button variant="outline" size="sm" onClick={exportCsv} disabled={exporting}>
-              {exporting
-                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                : <Download className="mr-2 h-4 w-4" />}
-              {exporting ? 'Preparing CSV…' : 'Export CSV'}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={exportCsv} disabled={exporting}>
+                {exporting
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <Download className="mr-2 h-4 w-4" />}
+                {exporting ? 'Preparing CSV…' : 'Export CSV'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setGbkDialogOpen(true)}>
+                <Download className="mr-2 h-4 w-4" />
+                Download GBK Files
+              </Button>
+            </div>
             {exportError && (
               <span className="text-[11px] text-destructive">{exportError}</span>
             )}
@@ -697,7 +753,9 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
             className="mt-1"
           />
         </div>
-        <Button onClick={() => setFilters(draftFilters)} variant="secondary" disabled={!draftFilters}>
+        {/* Back to page 1 with the new filter, as a sort or page-size change does:
+            page 5 of a set narrowed to one page was an empty table. */}
+        <Button onClick={() => { setFilters(draftFilters); setPage(0); }} variant="secondary" disabled={!draftFilters}>
           Apply Filters
         </Button>
       </div>
@@ -724,7 +782,7 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
           groups={stackGroups}
           onGroupsChange={setStackGroups}
           selectedLocus={selectedLocus}
-          onSelectLocus={setSelectedLocus}
+          onSelectLocus={(locus) => { setSelectedLocus(locus); setPage(0); }}
           open={mapOpen}
           onOpenChange={setMapOpen}
         />
@@ -770,7 +828,7 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
               </p>
             ) : (
               <>
-                <SampleMapDots samples={sampleMap.data.data} height={460} />
+                <SampleMapDots samples={sampleMap.data.data} height={460} showAreaSelect={false} />
                 {/* Most samples have no coordinates, so state how many are drawn. */}
                 <p className="text-[11px] text-muted-foreground">
                   {sampleMap.data.total.toLocaleString()} sample
@@ -788,7 +846,29 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
       {/* The open map carries the legend; otherwise the table needs its own. */}
       {(!contigMap || !mapOpen) && <BitScoreLegend />}
 
-      {/* ResizableTable has its own scroll container; do not wrap it in another. */}
+      {noRowsHere ? (
+        <div className="rounded-lg border py-10 text-center">
+          {totalGroups > 0 ? (
+            <>
+              <p className="text-sm font-medium">No results on this page</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                The results end at page {lastPage.toLocaleString()}.
+              </p>
+              <Button className="mt-3" variant="outline" size="sm" onClick={() => setPage(lastPage - 1)}>
+                Go to page {lastPage.toLocaleString()}
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium">No hits match the current filters</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Lower the identity or coverage filter{selectedLocus ? ', or clear the locus,' : ''} to see hits again.
+              </p>
+            </>
+          )}
+        </div>
+      ) : (
+      /* ResizableTable has its own scroll container; do not wrap it in another. */
       <ResizableTable<SequenceSearchGroup>
         columns={columns}
         data={groups}
@@ -821,13 +901,14 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
               <GroupAlignments
                 sessionId={sessionId}
                 group={group}
-                filters={activeFilters}
+                filters={{ ...activeFilters, ...locus }}
                 isNucleotideQuery={isNucleotideQuery}
               />
             </div>
           ) : null
         }
       />
+      )}
 
       {totalGroups > 0 && (
         <Pagination
@@ -840,6 +921,19 @@ export function SequenceResultsTable({ sessionId }: SequenceResultsTableProps) {
           onPageSizeChange={(size) => setParams({ size: size === DEFAULT_PAGE_SIZE ? null : String(size), page: null })}
         />
       )}
+
+      <GbkExportDialog
+        open={gbkDialogOpen}
+        onOpenChange={setGbkDialogOpen}
+        title="Download GBK files"
+        description={
+          <>
+            Packages the GenBank (.gbk) files of every Atlas BGC these hits land in
+            {isFiltered ? ', under the current filters,' : ''} into a zip.
+          </>
+        }
+        createJob={createGbkExport}
+      />
     </div>
   );
 }

@@ -18,6 +18,9 @@ vi.mock('@/lib/rate-limit', () => ({
   }),
 }));
 vi.mock('@/lib/prisma', () => ({ default: prisma }));
+vi.mock('@/lib/releases/read', () => ({
+  readReleases: async () => ({ files: [{ path: 'all_regions_gbk.tar.gz', bytes: 180_283_932_603 }] }),
+}));
 vi.mock('@/lib/bgc-download/read-region', async () => {
   class RegionBusyError extends Error {}
   class RegionNotFoundError extends Error {}
@@ -130,6 +133,8 @@ describe('GET /api/bgcs/[id]/download', () => {
     expect(Object.keys(body.bulkDownloads)).toEqual(['byProperty', 'byFamily', 'everything', 'fromTheArchive']);
     expect(body.bulkDownloads.everything)
       .toMatch(/^https:\/\/bgc-atlas\.cs\.uni-tuebingen\.de\/downloads\/all_regions_gbk\.tar\.gz /);
+    // Read from the release, in the /downloads page's units -- not a written-in figure.
+    expect(body.bulkDownloads.everything).toContain('(167.9 GB; members are named');
     expect(JSON.stringify(body)).not.toContain('localhost');
   });
 

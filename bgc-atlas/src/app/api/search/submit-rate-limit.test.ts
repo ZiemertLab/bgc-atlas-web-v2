@@ -62,7 +62,11 @@ vi.mock('@/lib/rate-limit', async (orig) => ({
   searchRateLimit: limiters.search,
   searchAttemptRateLimit: limiters.attempt,
 }));
-vi.mock('@/lib/queue', () => queue);
+// The routes queue through enqueueRecordedSearch, which wraps addSearchJob.
+vi.mock('@/lib/queue', () => ({
+  ...queue,
+  enqueueRecordedSearch: (...args: unknown[]) => queue.addSearchJob(...args),
+}));
 vi.mock('@/lib/seqsearch/database', () => seqDb);
 vi.mock('@/lib/bigslice/database', () => bigsliceDb);
 
@@ -90,11 +94,11 @@ const GENBANK = [
   '',
 ].join('\n');
 
-function sequenceRequest(sequence: string) {
+function sequenceRequest(sequence: string, extra: Record<string, unknown> = {}) {
   return new NextRequest('http://localhost/api/search/sequence/submit', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-real-ip': IP },
-    body: JSON.stringify({ sequence }),
+    body: JSON.stringify({ sequence, ...extra }),
   });
 }
 
@@ -164,6 +168,68 @@ describe('sequence search submissions', () => {
     const res = await submitSequence(sequenceRequest(PROTEIN));
     expect(res.status).toBe(500);
     expect(searchesCharged()).toBe(0);
+  });
+
+  it('rejects a non-numeric threshold before queueing anything', async () => {
+    // A string maxResults passed the old range check (NaN compares false) and reached the
+    // remote shell that runs DIAMOND.
+    for (const extra of [
+      { maxResults: '1 $(touch /tmp/pwned)' },
+      { minIdentity: '50; id' },
+      { eValue: '1e-5`id`' },
+      { sequenceType: 'protein; id' },
+    ]) {
+      const res = await submitSequence(sequenceRequest(PROTEIN, extra));
+      expect(res.status).toBe(400);
+    }
+    expect(queue.addSearchJob).not.toHaveBeenCalled();
+    expect(searchesCharged()).toBe(0);
+  });
+
+  it('refuses a body over the size cap before reading it, and refunds the slot', async () => {
+    const req = new NextRequest('http://localhost/api/search/sequence/submit', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-real-ip': IP,
+        'content-length': String(32 * 1024 * 1024 + 1),
+      },
+      body: JSON.stringify({ sequence: PROTEIN }),
+    });
+    const res = await submitSequence(req);
+    expect(res.status).toBe(413);
+    expect(queue.addSearchJob).not.toHaveBeenCalled();
+    expect(searchesCharged()).toBe(0);
+    expect(attemptsCharged()).toBe(1);
+  });
+
+  it('accepts a body exactly at the size cap', async () => {
+    const req = new NextRequest('http://localhost/api/search/sequence/submit', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-real-ip': IP,
+        'content-length': String(32 * 1024 * 1024),
+      },
+      body: JSON.stringify({ sequence: PROTEIN }),
+    });
+    expect((await submitSequence(req)).status).toBe(200);
+  });
+
+  it('asks for a duplicate with the same parameters, not the same sequence alone', async () => {
+    // A resubmission at other thresholds used to get the earlier session back.
+    await submitSequence(sequenceRequest(PROTEIN, { minIdentity: 30, minCoverage: 60, maxResults: 200, eValue: '1e-3' }));
+    expect(seqDb.checkDuplicateSearch).toHaveBeenCalledWith(
+      expect.any(String),
+      { sequenceType: 'protein', eValue: 0.001, minIdentity: 30, minCoverage: 60, maxResults: 200 },
+      24,
+    );
+  });
+
+  it('queues numeric thresholds as numbers', async () => {
+    const res = await submitSequence(sequenceRequest(PROTEIN, { maxResults: '250', minIdentity: 70 }));
+    expect(res.status).toBe(200);
+    expect(queue.addSearchJob.mock.calls[0][0].parameters).toMatchObject({ maxResults: 250, identity: 70 });
   });
 
   it('turns away the eleventh queued search without refunding a slot it never charged', async () => {

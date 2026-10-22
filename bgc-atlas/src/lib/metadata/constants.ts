@@ -197,6 +197,15 @@ export const FIELD_METADATA = {
 
 export const ALL_FIELD_NAMES = Object.keys(FIELD_METADATA) as Array<keyof typeof FIELD_METADATA>;
 
+/** The fields entered as numbers: exactly the `number` fields of SampleMetadata (constants.test.ts). */
+export const NUMERIC_FIELDS: ReadonlySet<string> = new Set([
+  'latitude', 'longitude',
+  'depth_min_meters', 'depth_max_meters', 'elevation_meters',
+  'temperature', 'ph', 'salinity',
+  'current_precipitation_mm', 'mean_annual_precipitation_mm', 'mean_annual_temperature',
+  'host_taxid',
+]);
+
 export const REQUIRED_FIELDS = ALL_FIELD_NAMES.filter(
   (field) => FIELD_METADATA[field].required
 );

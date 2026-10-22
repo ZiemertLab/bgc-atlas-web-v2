@@ -140,8 +140,14 @@ def main() -> int:
         print(f"\nUPDATE affected {cur.rowcount} rows", flush=True)
         conn.commit()
         print("committed.", flush=True)
-        print("\nNOW REFRESH: assembly_samples_mv, gcf_gold_ecosystem_distribution_mv, "
-              "bgc_gold_ecosystem_distribution_mv, sample_map_view, sample_summary", flush=True)
+        # Dependency order (docs/runbooks/post-load-refresh.md tiers), all CONCURRENTLY
+        # (every one has a unique index). gcf_member_ecosystem_mv -- the /gcfs ecosystem
+        # source -- is skipped on a database without it.
+        print("\nNOW REFRESH, in this order:", flush=True)
+        for mv in ("sample_summary", "assembly_samples_mv", "sample_map_view",
+                   "bgc_gold_ecosystem_distribution_mv", "gcf_gold_ecosystem_distribution_mv",
+                   "gcf_member_ecosystem_mv", "gcf_distributions_mv"):
+            print(f"  REFRESH MATERIALIZED VIEW CONCURRENTLY {mv};", flush=True)
         return 0
     except Exception:
         conn.rollback()

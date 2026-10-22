@@ -13,31 +13,37 @@ import { Pagination } from '@/components/ui/pagination';
 import { BgcSourceCell } from '@/components/tables/bgc-table/bgc-source-cell';
 import { handleDownload as downloadBgcRows } from '@/components/tables/bgc-table/bgc-table-utils';
 import { ExportMenu } from '@/components/ui/export-menu';
+import { ListErrorState } from '@/components/ui/list-error-state';
+import { isDeepPageRefusal } from '@/lib/api-client';
+import { useLastKnown } from '@/lib/hooks/use-last-known';
 import type { ExportFormat } from '@/lib/export/format';
 import { useDataSourceOptions } from '@/lib/hooks/use-data-source-options';
 import { TableSkeleton } from '@/components/ui/loading-skeleton';
 import { ColdLoadHint } from '@/components/ui/cold-load-hint';
 import { CopyLinkButton } from '@/components/ui/copy-link-button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { FilterChips } from '@/components/ui/filter-chips';
+import { FilterChips, type FilterChip } from '@/components/ui/filter-chips';
+import { appliedFilterValue, formatAreaLabel, formatRangeLabel, optionLabel } from '@/lib/filter-chip-labels';
 import { BgcCard } from '@/components/ui/bgc-card';
 import { bgcExportPath, useBgcs, type BgcListItem } from '@/lib/hooks/use-bgcs';
 import type { TableColumn } from '@/components/ui/resizable-table';
 import { useStatistics } from '@/lib/hooks/use-statistics';
 import { BgcCharts } from '@/components/statistics/BgcCharts';
-import { useSearchParams, usePathname, useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { readNumber, readOneOf, readPage, readPageSize, type UrlEntry } from '@/lib/url-state';
+import { useExternalNavigationKey, useMirrorToUrl } from '@/lib/hooks/use-mirror-to-url';
 import { formatGOLDBreadcrumb, getGOLDBadgeClass } from '@/lib/utils/gold-parser';
-import { getProductCategoryBadgeStyle, getTaxonomyBadgeStyle } from '@/lib/utils/chart-utils';
+import { getProductCategoryBadgeStyle, getTaxonomyBadgeStyle, SOURCE_TYPE_LABELS } from '@/lib/utils/chart-utils';
 import { getTaxonDisplayName, formatTaxonomyBreadcrumb } from '@/lib/utils/taxonomy-utils';
 import { sampleBrowseHref, sampleBrowseLabel } from '@/lib/utils/sample-link';
 import { GCF_NAME_TOOLTIP } from '@/lib/gcf-naming';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { GOLD_BUCKET_LABEL } from '@/lib/utils/gold-buckets';
+import { TaxonomyBadge } from '@/components/ui/taxonomy-badge';
+import { goldBucketLabel } from '@/lib/utils/gold-buckets';
 import { BiomeLegend } from '@/components/ui/biome-legend';
 import { AdvancedFilterDrawer } from '@/components/filters/advanced-filter-drawer';
 import { bgcFilterFields } from '@/lib/filters/field-definitions';
 import { bgcFilterRecipes } from '@/lib/filters/recipes';
-import { hasAnyActiveFilter } from '@/lib/bgc-sort';
+import { hasAnyActiveFilter, isScanHeavySort } from '@/lib/bgc-sort';
 import { RefetchFrame } from '@/components/ui/refetch-frame';
 import { FilterGroup, createDefaultFilterGroup, deserializeFilterGroup, hasFilterRules, serializeFilterGroup, summarizeFilterGroup } from '@/lib/filters/types';
 import {
@@ -48,64 +54,109 @@ import {
 export default function BGCsPage() {
   return (
     <Suspense fallback={null}>
-      <BGCsPageInner />
+      <BGCsPageKeyed />
     </Suspense>
   );
 }
 
-function BGCsPageInner() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+/** Remounts the page on a same-route navigation it did not write, so it re-seeds
+ *  from the URL like a fresh visit (see useMirrorToUrl). */
+function BGCsPageKeyed() {
+  const navKey = useExternalNavigationKey();
+  return <BGCsPageInner key={navKey} />;
+}
 
-  // URL filters are seeded on the first render, not by an effect: an effect would
-  // first fire an unfiltered /api/bgcs that keeps running server-side after the abort.
-  // The effects below still track later URL changes.
-  const urlSeed = {
-    bgcId: searchParams.get('bgcId') ?? '',
-    assembly: searchParams.get('assembly') ?? '',
-    gcf: searchParams.get('gcf') ?? '',
-    sampleId: searchParams.get('sampleId') ?? '',
-    advanced: searchParams.get('advancedFilters') ?? '',
-    bbox: (['latMin', 'latMax', 'lonMin', 'lonMax', 'goldBucket'] as const).reduce<{
-      latMin?: string; latMax?: string; lonMin?: string; lonMax?: string; goldBucket?: string;
-    }>((acc, k) => {
-      const v = searchParams.get(k);
+/** The page sizes both Pagination controls offer; a `size` outside them reads as the default. */
+const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
+
+/** Every column id the table can sort by. A `sort` outside it reads as the default. */
+const BGC_SORT_FIELDS = [
+  'id', 'assembly', 'class', 'type', 'completeness', 'taxonomy', 'length', 'genes', 'gcf', 'distance',
+] as const;
+type BgcSortField = (typeof BGC_SORT_FIELDS)[number];
+const DEFAULT_SORT_FIELD: BgcSortField = 'length';
+const DEFAULT_SORT_ORDER = 'desc' as const;
+
+/** The category values, labelled once for the toolbar Select, the column
+ *  filter and the chip, so the page names a category one way. */
+const BGC_CATEGORY_OPTIONS = [
+  { label: 'NRPS', value: 'NRPS' },
+  { label: 'PKS', value: 'PKS' },
+  { label: 'RiPP', value: 'RiPP' },
+  { label: 'Terpene', value: 'terpene' },
+  { label: 'Saccharide', value: 'saccharide' },
+  { label: 'Other', value: 'other' },
+  { label: 'Hybrid', value: 'Hybrid' },
+];
+
+const BBOX_URL_KEYS = ['latMin', 'latMax', 'lonMin', 'lonMax', 'goldBucket'] as const;
+type BboxParams = Partial<Record<(typeof BBOX_URL_KEYS)[number], string>>;
+
+function BGCsPageInner() {
+  const searchParams = useSearchParams();
+  const paramOr = (key: string, fallback = '') => searchParams.get(key) ?? fallback;
+
+  // Every filter, the sort and the paging are seeded from the URL in useState
+  // initializers, on the first render, not synced in by an effect afterwards. An
+  // effect runs after that render has already committed, so the list query fired
+  // once with no filter and then again with it: /bgcs?sampleId=... issued an
+  // UNFILTERED /api/bgcs, aborted it client-side, and fired the real one. The
+  // abort does not stop the server, so the wasted query kept running. The
+  // component is "use client" inside <Suspense fallback={null}>, so
+  // useSearchParams() is populated on the first render.
+  //
+  // useMirrorToUrl below writes them back; it is the page's only URL writer. A
+  // same-route navigation it did not write (the nav item's bare /bgcs) remounts
+  // this component through BGCsPageKeyed, so it seeds again from the new URL.
+  const [currentPage, setCurrentPage] = useState(() => readPage(paramOr('page')));
+  const [pageSize, setPageSize] = useState(() =>
+    readPageSize(paramOr('size'), PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE),
+  );
+  const [searchTerm, setSearchTerm] = useState(() => paramOr('search'));
+  const [typeFilter, setTypeFilter] = useState(() => paramOr('category'));
+  const [sortField, setSortField] = useState<BgcSortField>(
+    () => readOneOf(paramOr('sort'), BGC_SORT_FIELDS, DEFAULT_SORT_FIELD),
+  );
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(
+    () => readOneOf(paramOr('order'), ['asc', 'desc'] as const, DEFAULT_SORT_ORDER),
+  );
+  // The default ordering is a two-key sort (length, then completeness), which no
+  // single sortField/sortOrder pair can express; length-descending stands for it.
+  // Derived, so ?sort=length&order=desc lands exactly where a bare /bgcs does.
+  const isDefaultSort = sortField === DEFAULT_SORT_FIELD && sortOrder === DEFAULT_SORT_ORDER;
+  const [mounted, setMounted] = useState(false);
+
+  // Column filters
+  const [filterId, setFilterId] = useState(() => paramOr('bgcId'));
+  const [filterName, setFilterName] = useState(() => paramOr('name'));
+  const [filterBiome, setFilterBiome] = useState(() => paramOr('biome'));
+  const [filterTypeText, setFilterTypeText] = useState(() => paramOr('type'));
+  // Forwarded raw, like sourceType and goldBucket: /api/bgcs refuses a value it
+  // cannot honour with a 400 the page shows, and the URL keeps the evidence.
+  // Dropping it here instead silently listed every BGC.
+  const [filterCompleteness, setFilterCompleteness] = useState(() => paramOr('completeness'));
+  const [filterAssembly, setFilterAssembly] = useState(() => paramOr('assembly'));
+  const [filterGcf, setFilterGcf] = useState(() => paramOr('gcf'));
+  const [filterSampleText, setFilterSampleText] = useState(() => paramOr('sample'));
+  const [filterSampleId, setFilterSampleId] = useState(() => paramOr('sampleId'));
+  const [filterDataSource, setFilterDataSource] = useState(() => paramOr('dataSource'));
+  const [bboxParams, setBboxParams] = useState<BboxParams>(() =>
+    BBOX_URL_KEYS.reduce<BboxParams>((acc, k) => {
+      const v = paramOr(k);
       if (v) acc[k] = v;
       return acc;
     }, {}),
-  };
-
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [typeFilter, setTypeFilter] = useState('');
-  const [sortField, setSortField] = useState<'id' | 'length' | 'genes' | 'contig' | 'sample' | 'gcf' | 'distance' | 'assembly' | 'class' | 'type' | 'completeness' | 'biome'>('length');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [isDefaultSort, setIsDefaultSort] = useState(true);
-  const [mounted, setMounted] = useState(false);
-
-  const [filterId, setFilterId] = useState(urlSeed.bgcId);
-  const [filterName, setFilterName] = useState('');
-  const [filterBiome, setFilterBiome] = useState('');
-  const [filterTypeText, setFilterTypeText] = useState('');
-  const [filterCompleteness, setFilterCompleteness] = useState('');
-  const [filterAssembly, setFilterAssembly] = useState(urlSeed.assembly);
-  const [filterGcf, setFilterGcf] = useState(urlSeed.gcf);
-  const [filterSampleText, setFilterSampleText] = useState('');
-  const [filterSampleId, setFilterSampleId] = useState(urlSeed.sampleId);
-  const [filterDataSource, setFilterDataSource] = useState('');
-  const [bboxParams, setBboxParams] = useState<{
-    latMin?: string; latMax?: string; lonMin?: string; lonMax?: string; goldBucket?: string;
-  }>(urlSeed.bbox);
-  const [filterTaxonomy, setFilterTaxonomy] = useState('');
-  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState('');
-  const [lenMin, setLenMin] = useState<string>('');
-  const [lenMax, setLenMax] = useState<string>('');
-  const [genesMin, setGenesMin] = useState<string>('');
-  const [genesMax, setGenesMax] = useState<string>('');
-  const [simMin, setSimMin] = useState<string>('');
-  const [simMax, setSimMax] = useState<string>('');
+  );
+  const [filterSourceType, setFilterSourceType] = useState(() => paramOr('sourceType'));
+  const [filterTaxonomy, setFilterTaxonomy] = useState(() => paramOr('taxonomy'));
+  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState(() => paramOr('goldEcosystem'));
+  const [lenMin, setLenMin] = useState<string>(() => readNumber(paramOr('lenMin')));
+  const [lenMax, setLenMax] = useState<string>(() => readNumber(paramOr('lenMax')));
+  const [genesMin, setGenesMin] = useState<string>(() => readNumber(paramOr('genesMin')));
+  const [genesMax, setGenesMax] = useState<string>(() => readNumber(paramOr('genesMax')));
+  const [simMin, setSimMin] = useState<string>(() => readNumber(paramOr('distMin')));
+  const [simMax, setSimMax] = useState<string>(() => readNumber(paramOr('distMax')));
 
   const [taxonomyRank, setTaxonomyRank] = useState<'auto' | 'domain' | 'phylum' | 'class' | 'order' | 'family' | 'genus' | 'species'>('auto');
   const dataSourceOptions = useDataSourceOptions();
@@ -147,17 +198,17 @@ function BGCsPageInner() {
   });
   const [openingBgcId, setOpeningBgcId] = useState<string | null>(null);
 
+  // Advanced filter drawer, applied filter and draft
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  // Seeded on first render like urlSeed; a stray unfiltered fetch here would fall back to PostgreSQL.
+  // Seeded on first render like the seeds above; a stray unfiltered fetch here would fall back to PostgreSQL.
   const [advancedFilters, setAdvancedFilters] = useState<FilterGroup | null>(
-    () => (urlSeed.advanced ? deserializeFilterGroup(urlSeed.advanced) ?? null : null)
+    () => deserializeFilterGroup(paramOr('advancedFilters')) ?? null
   );
   const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState<FilterGroup>(
-    () => (urlSeed.advanced ? deserializeFilterGroup(urlSeed.advanced) ?? createDefaultFilterGroup()
-                            : createDefaultFilterGroup())
+    () => deserializeFilterGroup(paramOr('advancedFilters')) ?? createDefaultFilterGroup()
   );
   const [unreadableAdvancedParam, setUnreadableAdvancedParam] = useState<string | null>(
-    () => unreadableAdvancedFilterParam(urlSeed.advanced)
+    () => unreadableAdvancedFilterParam(paramOr('advancedFilters'))
   );
 
   const hasAdvancedFiltersApplied = hasFilterRules(advancedFilters);
@@ -180,90 +231,24 @@ function BGCsPageInner() {
     setMounted(true);
   }, []);
 
-  const assemblyFromUrl = searchParams.get('assembly');
-  const sampleIdFromUrl = searchParams.get('sampleId');
-  const gcfFromUrl = searchParams.get('gcf');
-  const bgcIdFromUrl = searchParams.get('bgcId');
-  const latMinFromUrl = searchParams.get('latMin');
-  const latMaxFromUrl = searchParams.get('latMax');
-  const lonMinFromUrl = searchParams.get('lonMin');
-  const lonMaxFromUrl = searchParams.get('lonMax');
-  const goldBucketFromUrl = searchParams.get('goldBucket');
-  // The SQL path ignores 'unknown'.
-  const completenessFromUrl = searchParams.get('completeness');
-  const advancedFiltersParam = searchParams.get('advancedFilters');
-  useEffect(() => {
-    if (assemblyFromUrl) {
-      setFilterAssembly(assemblyFromUrl);
-      setCurrentPage(0);
-    }
-    if (sampleIdFromUrl) {
-      setFilterSampleId(sampleIdFromUrl);
-      setCurrentPage(0);
-    }
-    if (gcfFromUrl) {
-      setFilterGcf(gcfFromUrl);
-      setCurrentPage(0);
-    }
-    if (bgcIdFromUrl) {
-      setFilterId(bgcIdFromUrl);
-      setCurrentPage(0);
-    }
-    if (completenessFromUrl && ['complete', 'partial', 'unknown'].includes(completenessFromUrl)) {
-      setFilterCompleteness(completenessFromUrl);
-      setCurrentPage(0);
-    }
-    const next: { latMin?: string; latMax?: string; lonMin?: string; lonMax?: string; goldBucket?: string } = {};
-    if (latMinFromUrl) next.latMin = latMinFromUrl;
-    if (latMaxFromUrl) next.latMax = latMaxFromUrl;
-    if (lonMinFromUrl) next.lonMin = lonMinFromUrl;
-    if (lonMaxFromUrl) next.lonMax = lonMaxFromUrl;
-    if (goldBucketFromUrl) next.goldBucket = goldBucketFromUrl;
-    setBboxParams(next);
-  }, [assemblyFromUrl, sampleIdFromUrl, gcfFromUrl, bgcIdFromUrl, completenessFromUrl, latMinFromUrl, latMaxFromUrl, lonMinFromUrl, lonMaxFromUrl, goldBucketFromUrl]);
-
-  useEffect(() => {
-    if (!advancedFiltersParam) {
-      setAdvancedFilters(null);
-      setUnreadableAdvancedParam(null);
-      return;
-    }
-    const parsed = deserializeFilterGroup(advancedFiltersParam);
-    if (parsed) {
-      setAdvancedFilters(parsed);
-      setAdvancedFiltersDraft(parsed);
-      setUnreadableAdvancedParam(null);
-    } else {
-      setAdvancedFilters(null);
-      // Forwarded so the server refuses it; dropping it would answer the whole corpus.
-      setUnreadableAdvancedParam(unreadableAdvancedFilterParam(advancedFiltersParam));
-    }
-  }, [advancedFiltersParam]);
-
-  const updateAdvancedFiltersInUrl = (encoded: string) => {
-    if (!pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    if (encoded) {
-      params.set('advancedFilters', encoded);
-    } else {
-      params.delete('advancedFilters');
-    }
-    const query = params.toString();
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
+  const clearSampleIdFilter = () => {
+    setFilterSampleId('');
+    setCurrentPage(0);
   };
 
-  const clearBboxFilters = () => {
-    setBboxParams({});
+  const clearSourceTypeFilter = () => {
+    setFilterSourceType('');
     setCurrentPage(0);
-    if (!pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete('latMin');
-    params.delete('latMax');
-    params.delete('lonMin');
-    params.delete('lonMax');
-    params.delete('goldBucket');
-    const query = params.toString();
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
+  };
+
+  /** "Clear all" for the sample, area, source and advanced filters. State only: the URL
+   *  follows through the one mirror below, so there is no second write to race. */
+  const clearUrlFilters = () => {
+    resetAdvancedFilterState();
+    setBboxParams({});
+    setFilterSourceType('');
+    setFilterSampleId('');
+    setCurrentPage(0);
   };
 
   const applyAdvancedFilters = () => {
@@ -273,17 +258,17 @@ function BGCsPageInner() {
     setUnreadableAdvancedParam(null);
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl(serializeFilterGroup(nextFilters));
   };
 
-  const clearAdvancedFilters = () => {
+  const resetAdvancedFilterState = () => {
     setAdvancedFilters(null);
     setUnreadableAdvancedParam(null);
     setAdvancedFiltersDraft(createDefaultFilterGroup());
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl('');
   };
+
+  const clearAdvancedFilters = resetAdvancedFilterState;
 
   function useDebouncedValue<T>(value: T, delay = 500) {
     const [debounced, setDebounced] = useState(value);
@@ -339,6 +324,7 @@ function BGCsPageInner() {
     lonMin: bboxParams.lonMin,
     lonMax: bboxParams.lonMax,
     goldBucket: bboxParams.goldBucket,
+    sourceType: filterSourceType || undefined,
     gcf: dFilterGcf || undefined,
     taxonomy: dFilterTaxonomy || undefined,
     goldEcosystem: dFilterGoldEcosystem || undefined,
@@ -354,6 +340,18 @@ function BGCsPageInner() {
   // Taxonomy sorting scans the whole corpus unless something narrows it first.
   const taxonomySortable = hasAnyActiveFilter(narrowingParams);
 
+  // ...and a taxonomy sort that has lost its narrowing filter (cleared, or a link
+  // that arrived without one) goes back to the default, as on /gcfs when the
+  // share sort loses its category. Otherwise the header and the URL would claim
+  // an order the server drops. The page goes with it: it was chosen in the old order.
+  useEffect(() => {
+    if (isScanHeavySort(sortField) && !taxonomySortable) {
+      setSortField(DEFAULT_SORT_FIELD);
+      setSortOrder(DEFAULT_SORT_ORDER);
+      setCurrentPage(0);
+    }
+  }, [sortField, taxonomySortable]);
+
   // Reset to page 1 when the sent parameters change. Done during render, not in an
   // effect, so no request goes out at the old deep offset.
   const filterSignature = JSON.stringify(narrowingParams);
@@ -364,11 +362,51 @@ function BGCsPageInner() {
   }
   const offset = (pagedUnder === filterSignature ? currentPage : 0) * pageSize;
 
+  // The page's ONE URL writer (see useMirrorToUrl): filters, sort and paging.
+  // Text and range filters are mirrored DEBOUNCED, as they are sent, so the URL
+  // names the rows on screen rather than a half-typed word. The advanced filter
+  // is the value forwarded, not the encoded state, so an unreadable link keeps
+  // its evidence in the URL and the server goes on refusing it. Existing names
+  // (bgcId, assembly, gcf, sampleId, completeness, the area keys, sourceType,
+  // advancedFilters) are the ones other pages already link with.
+  useMirrorToUrl(
+    [
+      ['search', dSearch],
+      ['category', typeFilter],
+      ['bgcId', dFilterId],
+      ['name', dFilterName],
+      ['biome', dFilterBiome],
+      ['type', dFilterTypeText],
+      ['completeness', filterCompleteness],
+      ['assembly', dFilterAssembly],
+      ['gcf', dFilterGcf],
+      ['sample', dFilterSampleText],
+      ['sampleId', filterSampleId],
+      ['dataSource', dFilterDataSource],
+      ['taxonomy', dFilterTaxonomy],
+      ['goldEcosystem', dFilterGoldEcosystem],
+      ['lenMin', dLenMin],
+      ['lenMax', dLenMax],
+      ['genesMin', dGenesMin],
+      ['genesMax', dGenesMax],
+      ['distMin', dSimMin],
+      ['distMax', dSimMax],
+      ...BBOX_URL_KEYS.map((k): UrlEntry => [k, bboxParams[k] ?? '']),
+      ['sourceType', filterSourceType],
+      ['advancedFilters', advancedFiltersRequestParam ?? ''],
+      ['sort', sortField, DEFAULT_SORT_FIELD],
+      ['order', sortOrder, DEFAULT_SORT_ORDER],
+      ['page', currentPage + 1, 1],
+      ['size', pageSize, DEFAULT_PAGE_SIZE],
+    ],
+    mounted,
+  );
+
   const listParams = {
     ...sortParams,
     ...narrowingParams,
   };
-  const { data, isLoading, isFetching, error } = useBgcs({
+  const { data, isLoading, isFetching, error, refetch } = useBgcs({
     limit: pageSize,
     offset,
     ...listParams,
@@ -379,6 +417,13 @@ function BGCsPageInner() {
   const bgcs = data?.data?.data || [];
   const total = data?.data?.total || 0;
   const totalPages = Math.ceil(total / pageSize);
+
+  // Under a deep-page refusal the pager stays, at the last total the list
+  // reported, so the reader can step back; any other error hides it, where
+  // "Showing 1–0 of 0" would read as an empty result.
+  const pagerShown = !error || isDeepPageRefusal(error);
+  const pagerItems = useLastKnown(total, !error, JSON.stringify(narrowingParams));
+  const pagerPages = Math.ceil(pagerItems / pageSize);
   const statistics = statisticsData?.data || null;
 
   // The unfiltered total can start as an overshooting planner estimate; clamp once it is corrected.
@@ -538,15 +583,7 @@ function BGCsPageInner() {
       sortable: true,
       filterable: true,
       filterType: 'select' as const,
-      filterOptions: [
-        { label: 'NRPS', value: 'NRPS' },
-        { label: 'PKS', value: 'PKS' },
-        { label: 'RiPP', value: 'RiPP' },
-        { label: 'terpene', value: 'terpene' },
-        { label: 'saccharide', value: 'saccharide' },
-        { label: 'other', value: 'other' },
-        { label: 'Hybrid', value: 'Hybrid' }
-      ],
+      filterOptions: BGC_CATEGORY_OPTIONS,
       visible: columnVisibility.class,
       renderCell: (bgc: BgcListItem) => {
         if (!bgc.category) return <span className="text-muted-foreground">—</span>;
@@ -612,7 +649,6 @@ function BGCsPageInner() {
       filterOptions: [
         { label: 'complete', value: 'complete' },
         { label: 'partial', value: 'partial' },
-        { label: 'unknown', value: 'unknown' }
       ],
       visible: columnVisibility.completeness,
       renderCell: (bgc: BgcListItem) => (
@@ -721,20 +757,7 @@ function BGCsPageInner() {
 
         return (
           <div className="max-w-full">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge
-                  variant={badgeStyle ? 'secondary' : 'outline'}
-                  className="text-xs max-w-full whitespace-normal h-auto"
-                  style={badgeStyle}
-                >
-                  {displayName}
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[440px]">
-                <p className="text-xs leading-relaxed">{fullPath}</p>
-              </TooltipContent>
-            </Tooltip>
+            <TaxonomyBadge name={displayName} lineage={fullPath} style={badgeStyle} className="text-xs" />
           </div>
         );
       }
@@ -843,9 +866,8 @@ function BGCsPageInner() {
   };
 
   const handleSort = (columnId: string, direction: 'asc' | 'desc') => {
-    setSortField(columnId as typeof sortField);
+    setSortField(columnId as BgcSortField);
     setSortOrder(direction);
-    setIsDefaultSort(columnId === 'length' && direction === 'desc');
     setCurrentPage(0);
   };
 
@@ -940,7 +962,9 @@ function BGCsPageInner() {
     distance: { min: simMin, max: simMax }
   };
 
-  const resetFilters = () => {
+  /** "Clear all" on the chips row: every filter, nothing else. The URL follows
+   *  through the one mirror; the page goes back to 1 through filterSignature. */
+  const clearAllFilters = () => {
     setSearchTerm('');
     setTypeFilter('');
     setFilterId('');
@@ -960,12 +984,14 @@ function BGCsPageInner() {
     setGenesMax('');
     setSimMin('');
     setSimMax('');
+    clearUrlFilters();
+  };
+
+  const resetFilters = () => {
+    clearAllFilters();
     setShowFilters({});
-    setSortField('length');
-    setSortOrder('desc');
-    setIsDefaultSort(true);
-    clearAdvancedFilters();
-    clearBboxFilters();
+    setSortField(DEFAULT_SORT_FIELD);
+    setSortOrder(DEFAULT_SORT_ORDER);
     setCurrentPage(0);
   };
 
@@ -991,59 +1017,79 @@ function BGCsPageInner() {
   const fmt = (value?: number | null): string =>
     statsLoading ? '—' : (value ?? 0).toLocaleString();
 
-  const filterChipsList = [
-    ...(searchTerm
-      ? [
-          {
-            key: 'search',
-            label: 'Search',
-            value: searchTerm,
-            onRemove: () => {
-              setSearchTerm('');
-              setCurrentPage(0);
-            },
-          },
-        ]
-      : []),
-    ...(typeFilter
-      ? [
-          {
-            key: 'class',
-            label: 'Category',
-            value: typeFilter,
-            onRemove: () => {
-              setTypeFilter('');
-              setCurrentPage(0);
-            },
-          },
-        ]
-      : []),
-    ...((bboxParams.latMin || bboxParams.latMax || bboxParams.lonMin || bboxParams.lonMax || bboxParams.goldBucket)
-      ? [
-          {
-            key: 'area',
-            label: bboxParams.goldBucket && !(bboxParams.latMin || bboxParams.latMax || bboxParams.lonMin || bboxParams.lonMax)
-              ? 'Ecosystem'
-              : 'Area',
-            value: (() => {
-              const parts: string[] = [];
-              if (bboxParams.latMin || bboxParams.latMax) {
-                parts.push(`lat ${bboxParams.latMin ?? '−∞'}…${bboxParams.latMax ?? '∞'}`);
-              }
-              if (bboxParams.lonMin || bboxParams.lonMax) {
-                parts.push(`lon ${bboxParams.lonMin ?? '−∞'}…${bboxParams.lonMax ?? '∞'}`);
-              }
-              if (bboxParams.goldBucket) {
-                parts.push(
-                  GOLD_BUCKET_LABEL[bboxParams.goldBucket as keyof typeof GOLD_BUCKET_LABEL] ?? bboxParams.goldBucket
-                );
-              }
-              return parts.join(', ');
-            })(),
-            onRemove: clearBboxFilters,
-          },
-        ]
-      : []),
+  // Every active filter gets a chip, column filters included: a copied link can
+  // carry ?biome= or ?lenMin= while that filter row is closed or its column is
+  // hidden, and nothing else on screen would say the table is narrowed. Values
+  // are the APPLIED ones (what the request sends), see appliedFilterValue.
+  const ap = appliedFilterValue;
+  const hasArea = Boolean(bboxParams.latMin || bboxParams.latMax || bboxParams.lonMin || bboxParams.lonMax);
+  const filterChipsList: FilterChip[] = [
+    { key: 'search', label: 'Search', value: ap(searchTerm, dSearch), onRemove: () => setSearchTerm('') },
+    { key: 'class', label: 'Category', value: typeFilter && optionLabel(BGC_CATEGORY_OPTIONS, typeFilter), onRemove: () => setTypeFilter('') },
+    { key: 'bgcId', label: 'BGC ID', value: ap(filterId, dFilterId), onRemove: () => setFilterId('') },
+    { key: 'name', label: 'Name', value: ap(filterName, dFilterName), onRemove: () => setFilterName('') },
+    { key: 'assembly', label: 'Assembly', value: ap(filterAssembly, dFilterAssembly), onRemove: () => setFilterAssembly('') },
+    {
+      key: 'dataSource',
+      label: 'Data source',
+      value: ap(filterDataSource, dFilterDataSource)
+        && optionLabel(dataSourceOptions, dFilterDataSource),
+      onRemove: () => setFilterDataSource(''),
+    },
+    { key: 'sample', label: 'Sample', value: ap(filterSampleText, dFilterSampleText), onRemove: () => setFilterSampleText('') },
+    { key: 'type', label: 'Product', value: ap(filterTypeText, dFilterTypeText), onRemove: () => setFilterTypeText('') },
+    { key: 'completeness', label: 'Completeness', value: filterCompleteness, onRemove: () => setFilterCompleteness('') },
+    { key: 'biome', label: 'Biome', value: ap(filterBiome, dFilterBiome), onRemove: () => setFilterBiome('') },
+    {
+      key: 'goldEcosystem',
+      label: 'GOLD Ecosystem',
+      value: ap(filterGoldEcosystem, dFilterGoldEcosystem),
+      onRemove: () => setFilterGoldEcosystem(''),
+    },
+    { key: 'taxonomy', label: 'Taxonomy', value: ap(filterTaxonomy, dFilterTaxonomy), onRemove: () => setFilterTaxonomy('') },
+    {
+      key: 'length',
+      label: 'Length',
+      value: formatRangeLabel(ap(lenMin, dLenMin), ap(lenMax, dLenMax), ' bp'),
+      onRemove: () => { setLenMin(''); setLenMax(''); },
+    },
+    {
+      key: 'genes',
+      label: 'Genes',
+      value: formatRangeLabel(ap(genesMin, dGenesMin), ap(genesMax, dGenesMax)),
+      onRemove: () => { setGenesMin(''); setGenesMax(''); },
+    },
+    { key: 'gcf', label: 'GCF', value: ap(filterGcf, dFilterGcf), onRemove: () => setFilterGcf('') },
+    {
+      key: 'distance',
+      label: 'GCF distance',
+      value: formatRangeLabel(ap(simMin, dSimMin), ap(simMax, dSimMax)),
+      onRemove: () => { setSimMin(''); setSimMax(''); },
+    },
+    {
+      key: 'area',
+      label: 'Area',
+      value: hasArea ? formatAreaLabel(bboxParams) : '',
+      onRemove: () => setBboxParams(({ goldBucket }) => (goldBucket ? { goldBucket } : {})),
+    },
+    {
+      key: 'goldBucket',
+      label: 'Environment',
+      value: bboxParams.goldBucket
+        ? goldBucketLabel(bboxParams.goldBucket)
+        : '',
+      onRemove: () => setBboxParams(({ latMin, latMax, lonMin, lonMax }) => ({ latMin, latMax, lonMin, lonMax })),
+    },
+    { key: 'sampleId', label: 'Sample ID', value: filterSampleId, onRemove: clearSampleIdFilter },
+    {
+      key: 'source',
+      label: 'Source',
+      // A value outside the four (a stale link the server refuses) shows as typed.
+      value: filterSourceType
+        ? (Object.hasOwn(SOURCE_TYPE_LABELS, filterSourceType) ? `${SOURCE_TYPE_LABELS[filterSourceType]}s` : filterSourceType)
+        : '',
+      onRemove: clearSourceTypeFilter,
+    },
     ...(hasAdvancedFiltersApplied
       ? advancedFilterSummaries.map((summary, index) => ({
           key: `advanced-${index}`,
@@ -1052,7 +1098,7 @@ function BGCsPageInner() {
           onRemove: clearAdvancedFilters,
         }))
       : []),
-  ];
+  ].filter((chip) => chip.value);
 
   return (
     <MainLayout>
@@ -1153,13 +1199,9 @@ function BGCsPageInner() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All categories</SelectItem>
-                <SelectItem value="NRPS">NRPS</SelectItem>
-                <SelectItem value="PKS">PKS</SelectItem>
-                <SelectItem value="RiPP">RiPP</SelectItem>
-                <SelectItem value="terpene">Terpene</SelectItem>
-                <SelectItem value="saccharide">Saccharide</SelectItem>
-                <SelectItem value="other">Other</SelectItem>
-                <SelectItem value="Hybrid">Hybrid</SelectItem>
+                {BGC_CATEGORY_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
@@ -1201,13 +1243,7 @@ function BGCsPageInner() {
         <FilterChips
           className="mb-4"
           filters={filterChipsList}
-          onClearAll={() => {
-            setSearchTerm('');
-            setTypeFilter('');
-            clearAdvancedFilters();
-            clearBboxFilters();
-            setCurrentPage(0);
-          }}
+          onClearAll={clearAllFilters}
         />
 
         <AdvancedFilterDrawer
@@ -1240,12 +1276,12 @@ function BGCsPageInner() {
             <BiomeLegend />
           </div>
 
-          {!error && !isLoading && total > 0 && (
+          {pagerShown && !isLoading && pagerItems > 0 && (
             <div className="mb-4">
               <Pagination
                 currentPage={currentPage}
-                totalPages={totalPages}
-                totalItems={total}
+                totalPages={pagerPages}
+                totalItems={pagerItems}
                 pageSize={pageSize}
                 offset={offset}
                 onPageChange={(p) => setCurrentPage(p)}
@@ -1253,17 +1289,19 @@ function BGCsPageInner() {
                   setPageSize(s);
                   setCurrentPage(0);
                 }}
-                pageSizeOptions={[5, 10, 25, 50, 100]}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
               />
             </div>
           )}
 
           {error ? (
-            <div className="py-12 text-center text-sm">
-              <p className="font-semibold text-destructive">Failed to load BGCs</p>
-              {/* The server's message names the refused filter field and operator. */}
-              <p className="mx-auto mt-2 max-w-prose text-muted-foreground">{error.message}</p>
-            </div>
+            <ListErrorState
+              error={error}
+              noun="BGCs"
+              onRetry={refetch}
+              retrying={isFetching}
+              onFirstPage={() => setCurrentPage(0)}
+            />
           ) : isLoading ? (
             <div className="space-y-6">
               <ColdLoadHint loading label="Loading BGCs" />
@@ -1301,11 +1339,11 @@ function BGCsPageInner() {
           <Button variant="outline" size="sm" className="shrink-0" onClick={resetFilters}>
             Reset filters
           </Button>
-          {/* Gated on !error, or a failed query reads "Showing 1–0 of 0". */}
-          {!error && <Pagination
+          {/* Gated like the top control (pagerShown), or a failed query reads "Showing 1–0 of 0". */}
+          {pagerShown && (!error || pagerItems > 0) && <Pagination
             currentPage={currentPage}
-            totalPages={totalPages}
-            totalItems={total}
+            totalPages={pagerPages}
+            totalItems={pagerItems}
             pageSize={pageSize}
             offset={offset}
             onPageChange={(p) => setCurrentPage(p)}
@@ -1313,7 +1351,7 @@ function BGCsPageInner() {
               setPageSize(s);
               setCurrentPage(0);
             }}
-            pageSizeOptions={[5, 10, 25, 50, 100]}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
           />}
         </div>
       </div>

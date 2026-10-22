@@ -10,7 +10,7 @@ import {
   showsAbstractText,
 } from '@/components/ui/abstract-credit';
 import { useStudyBrief } from '@/lib/hooks/use-studies';
-import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey } from '@/lib/utils/accession';
+import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey, studyTitle } from '@/lib/utils/accession';
 import { getGOLDColorHex } from '@/lib/utils/gold-parser';
 import type { Study } from '@/lib/types';
 
@@ -60,7 +60,7 @@ export function StudyDetailsPanel({ study }: { study: Study }) {
               {/* The title must match StudyRow's fallback chain exactly. */}
               {showStudyKey(study.study_key, {
                 identifiers,
-                title: study.title || study.study_name || study.study_key,
+                title: studyTitle(study),
               }) && (
                 <span className="font-mono text-xs text-muted-foreground">{study.study_key}</span>
               )}

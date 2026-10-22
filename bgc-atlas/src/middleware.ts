@@ -10,7 +10,10 @@ import {
 export const config = {
   runtime: 'nodejs',
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    // The three upload routes are excluded too: when middleware runs, Next copies the request
+    // body for it and keeps only the first 10 MB, so the route got a cut-off upload. Each of
+    // them calls its own rate limiter, stricter than the general one skipped here.
+    '/((?!_next/static|_next/image|favicon.ico|api/contribute$|api/search/bigslice/submit$|api/search/sequence/submit$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };
 

@@ -19,6 +19,7 @@ interface ExportJobData {
   gcfId: string | null;
   gcfName: string | null;
   searchConditions: string[];
+  searchSource: 'property' | 'sequence' | null;
   searchHref: string | null;
   status: string;
   progress: number;
@@ -158,6 +159,7 @@ export default function ExportStatusPage({
   const packaged = done ? Math.max(0, total - d.missingFiles) : d.processedBgcs;
   const elapsedMs = d.startedAt ? (d.completedAt ? new Date(d.completedAt).getTime() : now) - new Date(d.startedAt).getTime() : null;
 
+  const isSequence = d.searchSource === 'sequence';
   const backHref = isRegions ? (d.searchHref ?? '/search?tab=properties') : `/gcfs/${d.gcfId}`;
   const backLabel = isRegions ? 'Back to search' : 'Back to GCF';
 
@@ -168,7 +170,7 @@ export default function ExportStatusPage({
           <div className="section-label mb-1.5">GBK export</div>
           <div className="atlas-rule mb-3">
             <h1 className={`text-2xl font-semibold tracking-tight md:text-3xl ${isRegions ? '' : 'font-mono'}`}>
-              {isRegions ? 'Property search regions' : d.gcfName}
+              {isRegions ? (isSequence ? 'Sequence search regions' : 'Property search regions') : d.gcfName}
             </h1>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -258,14 +260,25 @@ export default function ExportStatusPage({
 
         {isRegions && (
           <CollapsibleSection title="Search" defaultOpen>
-            {d.searchConditions.length > 0 ? (
+            {isSequence ? (
+              <>
+                <ul className="space-y-1 font-mono text-sm">
+                  {d.searchConditions.map((c, i) => <li key={i}>{c}</li>)}
+                </ul>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {d.searchConditions.length > 1
+                    ? 'Every Atlas BGC with a hit that passes these filters.'
+                    : 'Every Atlas BGC the search hit.'}
+                </p>
+              </>
+            ) : d.searchConditions.length > 0 ? (
               <ul className="space-y-1 font-mono text-sm">
                 {d.searchConditions.map((c, i) => <li key={i}>{c}</li>)}
               </ul>
             ) : (
               <p className="text-sm text-muted-foreground">No filters: every BGC, in the search&apos;s sort order.</p>
             )}
-            {total >= PROPERTY_GBK_EXPORT_MAX_REGIONS && (
+            {!isSequence && total >= PROPERTY_GBK_EXPORT_MAX_REGIONS && (
               <p className="mt-3 text-sm text-muted-foreground">
                 The search matched more than the export limit; the zip holds the first{' '}
                 {total.toLocaleString()} matches, in the search&apos;s sort order.

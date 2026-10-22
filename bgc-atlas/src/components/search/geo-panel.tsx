@@ -11,6 +11,8 @@ import type { GeoCell } from '@/lib/opensearch/client';
 import { GEO_COLOR_FIELDS } from '@/lib/opensearch/geo-grid';
 import { legendColor, legendLabel } from '@/components/search/geo-colors';
 import type { GeoView } from '@/components/search/geo-map.client';
+import { SampleMapDots } from '@/components/ui/sample-map-dots';
+import type { FrontendMapSample } from '@/lib/hooks/use-map-samples';
 
 const MAP_HEIGHT = 460;
 
@@ -60,6 +62,9 @@ export function GeoPanel({ group, total, nonce }: GeoPanelProps) {
   const [error, setError] = useState<string | null>(null);
   /** Across the whole result set, from the unbounded first fetch. */
   const [geolocated, setGeolocated] = useState<number | null>(null);
+  /** The matching samples when there are few enough to draw one by one; null = draw the
+   *  grid; undefined = not known yet, so neither map is drawn and swapped out a moment later. */
+  const [samples, setSamples] = useState<FrontendMapSample[] | null | undefined>(undefined);
 
   const viewRef = useRef<GeoView | null>(null);
   const reqId = useRef(0);
@@ -98,19 +103,27 @@ export function GeoPanel({ group, total, nonce }: GeoPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, nonce, colorField]);
 
-  // Coverage is a property of the whole result set, so it is counted without the grid, per query.
+  // Coverage, and whether the match is narrow enough to draw as samples, are properties of the
+  // whole result set, so they are asked once per query. The grid fetch above runs alongside;
+  // it is cheap exactly when the samples win.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setGeolocated(null);
+    setSamples(undefined);
     apiFetch('/api/search/properties/geo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ group, countOnly: true }),
+      body: JSON.stringify({ group, samples: true }),
     })
       .then((res) => res.json())
-      .then((body) => { if (!cancelled && typeof body?.hits === 'number') setGeolocated(body.hits); })
-      .catch(() => { /* the coverage readout just stays unstated */ });
+      .then((body) => {
+        if (cancelled) return;
+        if (typeof body?.hits === 'number') setGeolocated(body.hits);
+        setSamples(Array.isArray(body?.samples) ? body.samples : null);
+      })
+      // The coverage readout stays unstated and the grid stands in.
+      .catch(() => { if (!cancelled) setSamples(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, nonce]);
@@ -143,6 +156,7 @@ export function GeoPanel({ group, total, nonce }: GeoPanelProps) {
   }, [data]);
 
   const shown = data?.hits ?? 0;
+  const asGrid = samples === null;
   const withoutCoords = geolocated === null ? null : Math.max(0, total - geolocated);
 
   return (
@@ -165,45 +179,59 @@ export function GeoPanel({ group, total, nonce }: GeoPanelProps) {
 
       {open && (
         <div className="space-y-3 border-t px-4 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="geo-color-field" className="text-xs text-muted-foreground">Colour by:</label>
-            <select
-              id="geo-color-field"
-              value={colorField}
-              onChange={(e) => setColorField(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-            >
-              {GEO_COLOR_FIELDS.map((f) => (
-                <option key={f.id} value={f.id}>{f.label}</option>
-              ))}
-            </select>
-            {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-            {data && (
-              <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
-                {data.cells.length.toLocaleString()} cells of {intervalLabel(data.interval)}
-                {' · '}
-                {compact.format(shown)} BGCs in view
-                {data.coarsened && ' · coarsened to fit'}
-              </span>
-            )}
-          </div>
+          {asGrid && (
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="geo-color-field" className="text-xs text-muted-foreground">Colour by:</label>
+              <select
+                id="geo-color-field"
+                value={colorField}
+                onChange={(e) => setColorField(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                {GEO_COLOR_FIELDS.map((f) => (
+                  <option key={f.id} value={f.id}>{f.label}</option>
+                ))}
+              </select>
+              {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+              {data && (
+                <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                  {data.cells.length.toLocaleString()} cells of {intervalLabel(data.interval)}
+                  {' · '}
+                  {compact.format(shown)} BGCs in view
+                  {data.coarsened && ' · coarsened to fit'}
+                </span>
+              )}
+            </div>
+          )}
 
-          {error && (
+          {asGrid && error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">{error}</div>
           )}
 
-          <div className="overflow-hidden rounded-md border border-border">
-            <GeoMap
-              cells={data?.cells ?? []}
-              interval={data?.interval ?? 5}
-              legendKeys={data?.legendKeys ?? []}
-              colorField={data?.colorField ?? colorField}
-              onViewChange={handleViewChange}
-              height={MAP_HEIGHT}
-            />
-          </div>
+          {samples === undefined ? (
+            <div
+              className="flex items-center justify-center rounded-md border border-border bg-muted/30 text-sm text-muted-foreground"
+              style={{ height: MAP_HEIGHT }}
+            >
+              Loading map…
+            </div>
+          ) : samples === null ? (
+            <div className="overflow-hidden rounded-md border border-border">
+              <GeoMap
+                cells={data?.cells ?? []}
+                interval={data?.interval ?? 5}
+                legendKeys={data?.legendKeys ?? []}
+                colorField={data?.colorField ?? colorField}
+                onViewChange={handleViewChange}
+                height={MAP_HEIGHT}
+              />
+            </div>
+          ) : samples.length > 0 ? (
+            // The area-select actions open the unscoped sample lists, not this match.
+            <SampleMapDots samples={samples} height={MAP_HEIGHT} showAreaSelect={false} />
+          ) : null}
 
-          {legend.length > 0 && (
+          {asGrid && legend.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
               {legend.map(({ key, idx, count }) => (
                 <span key={key} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -219,9 +247,21 @@ export function GeoPanel({ group, total, nonce }: GeoPanelProps) {
           )}
 
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            Dots are grid cells sized by BGC count and filled with the most common value in
-            that cell; hover for the full breakdown, click for the samples behind it. Zooming
-            in re-aggregates at a finer resolution.
+            {asGrid ? (
+              <>
+                Dots are grid cells sized by BGC count and filled with the most common value in
+                that cell; hover for the full breakdown, click for the samples behind it. Zooming
+                in re-aggregates at a finer resolution.
+              </>
+            ) : samples && samples.length > 0 ? (
+              <>
+                {samples.length.toLocaleString()} sample{samples.length === 1 ? '' : 's'} with
+                coordinates. Each dot is a sample, sized by its matching BGCs (not all of its BGCs)
+                and coloured by its GOLD ecosystem; click one to inspect it.
+              </>
+            ) : samples ? (
+              <>None of the matching BGCs come from a sample with coordinates.</>
+            ) : null}
             {withoutCoords !== null && withoutCoords > 0 && (
               <> {withoutCoords.toLocaleString()} matching BGCs come from samples with no
                 coordinates and cannot be mapped.</>

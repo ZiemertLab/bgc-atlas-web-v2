@@ -20,6 +20,31 @@ Usage:
     gcf_scalar_patch.py <map.tsv> <os-url> <src> <dst> [--type field:keyword ...]
                         [--list field ...] [--json field ...] [--scroll N] [--chunk N]
                         [--id-field gcf_id] [--alias gcf_browse]
+                        [--dry-run] [--sample N] [--resume]
+
+DISABLED OBJECTS
+
+--type <field>:object-disabled maps a --json column as {"type": "object",
+"enabled": false}: stored in _source for display, never indexed. A per-family
+distribution keyed by arbitrary labels (product_type_member_share) must not
+reach the dynamic mapping, where every new key would become a field. A plain `--type <field>:object` would do exactly that.
+
+DRY RUN
+
+--dry-run does everything up to the first write and stops: it loads the map,
+reads the source mapping and settings, validates every column's type, prints
+the properties it would add, and shows before/after for up to --sample N
+(default 3) documents the map covers -- read with one small terms query, not a
+scroll. It creates nothing. Use it on a LIMIT-ed map before the real run.
+
+EXISTING DESTINATION
+
+The destination is created by this tool. If it already exists -- a leftover from
+an aborted run, or a name typed twice -- the tool refuses, because writing into
+it would top up an index of unknown content rather than build a known one. Pass
+--resume to continue into it deliberately. Any other error creating it (a bad
+mapping, say) aborts before a single _bulk: the cluster auto-creates indexes, so
+a _bulk into a missing destination would succeed with a guessed mapping.
 
 Alias promotion is not done here: verify first, then swap with the printed call.
 """
@@ -33,6 +58,52 @@ import urllib.request
 
 SCROLL_TTL = "15m"
 LIST_SEPARATOR = "\x1f"
+DISABLED_OBJECT = "object-disabled"
+
+
+def field_mapping(kind: str) -> dict:
+    """The mapping a --type kind stands for. object-disabled: see DISABLED OBJECTS."""
+    if kind == DISABLED_OBJECT:
+        return {"type": "object", "enabled": False}
+    return {"type": kind}
+
+
+def plan_properties(properties: dict, fields: list[str], types: dict[str, str],
+                    src: str) -> tuple[dict, list[str]]:
+    """The destination's properties, or the reasons to refuse.
+
+    An existing field must already have the mapping its --type asks for, because
+    a field cannot be remapped in place; a new one must be given a --type, so
+    that adding one is a deliberate act rather than a dynamic-template guess.
+    """
+    out = dict(properties)
+    errors: list[str] = []
+    for field in fields:
+        if field in out:
+            if field in types:
+                wanted = field_mapping(types[field])
+                if any(out[field].get(k) != v for k, v in wanted.items()):
+                    errors.append(f"--type {field}:{types[field]} contradicts the source mapping "
+                                  f"({out[field]}); an existing field cannot be remapped in place")
+            continue
+        if field not in types:
+            errors.append(f"{field} is not in {src}'s mapping and has no --type; refusing to let "
+                          f"the dynamic template guess")
+            continue
+        out[field] = field_mapping(types[field])
+    return out, errors
+
+
+# Every option the tool knows. Anything else starting with "--" is REFUSED rather
+# than taken for a positional: `--dryrun` must never start a real patch.
+VALUE_OPTIONS = {"--type", "--list", "--json", "--scroll", "--chunk", "--id-field",
+                 "--alias", "--sample"}
+FLAG_OPTIONS = {"--dry-run", "--resume"}
+
+
+def usage_error(message: str):
+    print(f"{message}\n\n{__doc__}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def parse_args(argv: list[str]):
@@ -41,46 +112,53 @@ def parse_args(argv: list[str]):
     jsons: set[str] = set()
     scroll = chunk = 2000
     id_field, alias = "gcf_id", "gcf_browse"
+    dry_run, sample, resume = False, 3, False
     positional: list[str] = []
     i = 0
     while i < len(argv):
-        if argv[i] == "--type":
-            field, _, kind = argv[i + 1].partition(":")
-            types[field] = kind
-            i += 2
+        arg = argv[i]
+        if arg in FLAG_OPTIONS:
+            if arg == "--dry-run":
+                dry_run = True
+            else:
+                resume = True
+            i += 1
             continue
-        if argv[i] == "--list":
-            lists.add(argv[i + 1])
+        if arg in VALUE_OPTIONS:
+            if i + 1 >= len(argv):
+                usage_error(f"{arg} needs a value")
+            value = argv[i + 1]
             i += 2
+            if arg == "--type":
+                field, sep, kind = value.partition(":")
+                if not sep or not field or not kind:
+                    usage_error(f"--type takes field:kind, got {value!r}")
+                types[field] = kind
+            elif arg == "--list":
+                lists.add(value)
+            elif arg == "--json":
+                jsons.add(value)
+            elif arg == "--scroll":
+                scroll = int(value)
+            elif arg == "--chunk":
+                chunk = int(value)
+            # For other browse indexes, e.g. sample_browse is keyed on sample_id.
+            elif arg == "--id-field":
+                id_field = value
+            elif arg == "--alias":
+                alias = value
+            elif arg == "--sample":
+                sample = int(value)
             continue
-        if argv[i] == "--json":
-            jsons.add(argv[i + 1])
-            i += 2
-            continue
-        if argv[i] == "--scroll":
-            scroll = int(argv[i + 1])
-            i += 2
-            continue
-        if argv[i] == "--chunk":
-            chunk = int(argv[i + 1])
-            i += 2
-            continue
-        # For other browse indexes, e.g. sample_browse is keyed on sample_id.
-        if argv[i] == "--id-field":
-            id_field = argv[i + 1]
-            i += 2
-            continue
-        if argv[i] == "--alias":
-            alias = argv[i + 1]
-            i += 2
-            continue
-        positional.append(argv[i])
+        if arg.startswith("-"):
+            usage_error(f"unknown option {arg}")
+        positional.append(arg)
         i += 1
-    if len(positional) < 4:
-        print(__doc__, file=sys.stderr)
-        raise SystemExit(2)
+    if len(positional) != 4:
+        usage_error(f"expected 4 positionals <map.tsv> <os-url> <src> <dst>, got {len(positional)}: "
+                    f"{positional}")
     return (positional[0], positional[1].rstrip("/"), positional[2], positional[3],
-            types, lists, jsons, scroll, chunk, id_field, alias)
+            types, lists, jsons, scroll, chunk, id_field, alias, dry_run, sample, resume)
 
 
 # Set by main(). Parsed there rather than at import so load_map can be tested.
@@ -96,6 +174,8 @@ def req(method, path, body=None, timeout=300, raw=None):
         try:
             with urllib.request.urlopen(r, timeout=timeout) as resp:
                 return json.loads(resp.read())
+        except urllib.error.HTTPError:
+            raise  # an answer, not a network blip: retrying a 400 changes nothing
         except (urllib.error.URLError, TimeoutError):
             if attempt == 3:
                 raise
@@ -177,10 +257,69 @@ def install_opensearch_auth() -> None:
     urllib.request.install_opener(opener)
 
 
+def create_destination(dst: str, body: dict, resume: bool) -> bool:
+    """Create dst; see EXISTING DESTINATION. False means stop before any write."""
+    try:
+        req("PUT", f"/{dst}", body)
+        print(f"created {dst}", flush=True)
+        return True
+    except urllib.error.HTTPError as e:
+        try:
+            error = json.loads(e.read() or b"{}").get("error", {})
+        except ValueError:
+            error = {}
+        kind = error.get("type") if isinstance(error, dict) else None
+        if kind == "resource_already_exists_exception":
+            if resume:
+                print(f"{dst} already exists; --resume given, continuing into it", flush=True)
+                return True
+            print(f"{dst} already exists. Refusing to write into an index this run did not "
+                  f"create; delete it, pick another name, or pass --resume", file=sys.stderr)
+            return False
+        print(f"creating {dst} failed ({e.code} {kind}): {json.dumps(error)[:600]} -- nothing "
+              f"was written", file=sys.stderr)
+        return False
+
+
+def dry_run(src: str, dst: str, src_properties: dict, properties: dict, src_set: dict,
+            fields: list[str], values: dict[str, dict], id_field: str, sample: int) -> int:
+    """Everything before the first write; see DRY RUN in the module docstring."""
+    added = {f: properties[f] for f in properties if f not in src_properties}
+    total = req("GET", f"/{src}/_count")["count"]
+    print(f"DRY RUN -- nothing will be created. {src}: {total:,} documents, "
+          f"max_result_window {src_set.get('max_result_window')} (carried: "
+          f"{carried_settings(src_set)})")
+    # The real run CONTINUES into an existing destination rather than failing, so
+    # a leftover from an aborted run would be topped up, not rebuilt. Say so now.
+    existing = [i["index"] for i in req("GET", f"/_cat/indices/{dst}*?format=json")
+                if i["index"] == dst]
+    if existing:
+        print(f"WARNING: {dst} already exists; the real run will refuse unless --resume. "
+              f"Delete it or pick another name first.")
+    print(f"{dst} would add {len(added)} properties:")
+    for field, mapping in added.items():
+        print(f"  {field:28s} {json.dumps(mapping)}")
+    print(f"and overwrite {len(fields) - len(added)} existing ones: "
+          f"{[f for f in fields if f not in added]}")
+    ids = list(values)[:max(sample * 50, 500)]
+    hits = req("POST", f"/{src}/_search", {
+        "size": sample, "query": {"terms": {id_field: ids}},
+        "_source": [id_field, *fields]})["hits"]["hits"]
+    covered = req("POST", f"/{src}/_count", {"query": {"terms": {id_field: ids}}})["count"]
+    print(f"{covered:,} of the first {len(ids):,} map ids are documents in {src}")
+    for h in hits:
+        doc = h["_source"]
+        row = values[doc[id_field]]
+        print(f"\n{doc[id_field]}")
+        for field in fields:
+            before, after = doc.get(field), row.get(field)
+            mark = "  " if before == after else "* "
+            print(f"  {mark}{field:28s} {json.dumps(before)[:70]:72s} -> {json.dumps(after)[:70]}")
+    return 0
 def main() -> int:
     global OS
     (MAP_PATH, OS, SRC, DST, TYPES, LISTS, JSONS, SCROLL_SIZE, BULK_CHUNK,
-     ID_FIELD, ALIAS) = parse_args(sys.argv[1:])
+     ID_FIELD, ALIAS, DRY_RUN, SAMPLE, RESUME) = parse_args(sys.argv[1:])
     fields, values = load_map(MAP_PATH, LISTS, JSONS, ID_FIELD)
     print(f"map: {len(values):,} families, fields {fields}", flush=True)
     if not values:
@@ -189,21 +328,15 @@ def main() -> int:
 
     src_map = req("GET", f"/{SRC}/_mapping")[SRC]["mappings"]
     src_set = req("GET", f"/{SRC}/_settings")[SRC]["settings"]["index"]
-    properties = dict(src_map.get("properties", {}))
-
-    for field in fields:
-        if field in properties:
-            if field in TYPES and TYPES[field] != properties[field].get("type"):
-                print(f"--type {field}:{TYPES[field]} contradicts the source mapping "
-                      f"({properties[field].get('type')}); an existing field cannot be remapped "
-                      f"in place", file=sys.stderr)
-                return 1
-            continue
-        if field not in TYPES:
-            print(f"{field} is not in {SRC}'s mapping and has no --type; refusing to let the "
-                  f"dynamic template guess", file=sys.stderr)
-            return 1
-        properties[field] = {"type": TYPES[field]}
+    src_properties = src_map.get("properties", {})
+    properties, errors = plan_properties(src_properties, fields, TYPES, SRC)
+    for error in errors:
+        print(error, file=sys.stderr)
+    if errors:
+        return 1
+    if DRY_RUN:
+        return dry_run(SRC, DST, src_properties, properties, src_set, fields, values,
+                       ID_FIELD, SAMPLE)
 
     body = {
         "settings": {"index": {
@@ -213,13 +346,8 @@ def main() -> int:
         }},
         "mappings": dict(src_map, properties=properties),
     }
-    try:
-        req("PUT", f"/{DST}", body)
-        print(f"created {DST}", flush=True)
-    except urllib.error.HTTPError as e:
-        if e.code != 400:
-            raise
-        print(f"{DST} already exists, continuing", flush=True)
+    if not create_destination(DST, body, RESUME):
+        return 1
 
     res = req("POST", f"/{SRC}/_search?scroll={SCROLL_TTL}",
               {"size": SCROLL_SIZE, "query": {"match_all": {}}, "sort": ["_doc"]})
@@ -229,6 +357,7 @@ def main() -> int:
 
     seen = unmapped = changed = 0
     set_count = {f: 0 for f in fields}
+    changed_count = {f: 0 for f in fields}
     t0 = time.time()
     lines: list[str] = []
     while True:
@@ -248,7 +377,10 @@ def main() -> int:
                 doc.update(row)
                 for f in row:
                     set_count[f] += 1
-                if any(before[f] != doc.get(f) for f in fields):
+                differs = [f for f in fields if before[f] != doc.get(f)]
+                for f in differs:
+                    changed_count[f] += 1
+                if differs:
                     changed += 1
             lines.append(json.dumps({"index": {"_id": h["_id"]}}) + "\n")
             lines.append(json.dumps(doc) + "\n")
@@ -276,8 +408,11 @@ def main() -> int:
     dst_count = req("GET", f"/{DST}/_count")["count"]
 
     print(f"\ndone: {seen:,} scrolled, {dst_count:,} in {DST}, {changed:,} documents changed")
+    # Per field, because the document total says nothing when new fields land on
+    # every family: what matters is how many OVERWRITTEN values actually moved.
     for f in fields:
-        print(f"  {f:24s} set on {set_count[f]:>8,}  ({100 * set_count[f] / max(seen, 1):5.1f}%)")
+        print(f"  {f:28s} set on {set_count[f]:>8,}  ({100 * set_count[f] / max(seen, 1):5.1f}%)"
+              f"  changed on {changed_count[f]:>8,}")
 
     if unmapped:
         print(f"{unmapped:,} scrolled families were absent from the map -- they kept their old "

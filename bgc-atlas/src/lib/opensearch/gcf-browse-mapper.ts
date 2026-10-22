@@ -23,6 +23,55 @@ const recordOfRecords = (value: unknown): Record<string, Record<string, number>>
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, recordOfNumbers(item)]));
 };
 
+const ECOSYSTEM_LEVELS = [1, 2, 3, 4, 5] as const;
+
+/** Values listed by share threshold: `{10: [...], 50: [...], 90: [...]}`. */
+export type ShareThresholdSets = Record<10 | 50 | 90, string[]>;
+
+/**
+ * The family share fields (product-type and ecosystem member shares).
+ *
+ * All-or-nothing, gated on `product_type_member_share`: the patch and the corpus
+ * write it on every family (`{}` included), while the threshold arrays are ABSENT
+ * when empty in a patched index. So its presence is what says the index carries
+ * the share fields, and an absent array then means "nothing clears T". Without it
+ * -- an index from before the patch, or a Postgres-built document -- none of these
+ * keys is set, and `undefined` reads "not indexed yet", never "no share".
+ */
+export function mapShareFields(document: Document) {
+  const share = document.product_type_member_share;
+  if (!share || typeof share !== 'object' || Array.isArray(share)) return {};
+  const byThreshold = (prefix: string): ShareThresholdSets => ({
+    10: arrayOfStrings(document[`${prefix}10`]),
+    50: arrayOfStrings(document[`${prefix}50`]),
+    90: arrayOfStrings(document[`${prefix}90`]),
+  });
+  const perLevel = <T,>(read: (level: number) => T): Record<number, T> =>
+    Object.fromEntries(ECOSYSTEM_LEVELS.map((level) => [level, read(level)]));
+  return {
+    /** {product: % of primary members carrying it}, 2 dp; overlapping. */
+    productTypeMemberShare: recordOfNumbers(share),
+    /** Products carried by >= 10/50/90 % of primary members. */
+    productTypesAtLeast: byThreshold('product_types_ge'),
+    /** Ecosystems holding >= 10/50/90 % of the members WITH a level-n ecosystem. */
+    ecosystemsAtLeastByLevel: perLevel((level) => byThreshold(`eco_l${level}_ge`)),
+    /** % of primary members that have a level-n ecosystem: the denominator above. */
+    ecosystemResolvedPctByLevel: perLevel((level) => nullableNumber(document[`resolved_pct_l${level}`])),
+    /**
+     * Argmax at level n and its share of RESOLVED members (max_pct_l<n>).
+     * max_pct is rounded to 1 dp; the eco_l<n>_ge<T> arrays come from the 2-dp
+     * share. Never test `pct >= T` to decide threshold membership: 49.96 displays
+     * as 50.0 here yet is correctly NOT in eco_l<n>_ge50. Read the arrays.
+     */
+    dominantEcosystemByLevel: perLevel((level) => {
+      const ecosystem = document[`dom_ecosystem_l${level}`];
+      return typeof ecosystem === 'string'
+        ? { ecosystem, pct: nullableNumber(document[`max_pct_l${level}`]) }
+        : null;
+    }),
+  };
+}
+
 export function mapGcfBrowseDocument(document: Document) {
   const id = String(document.gcf_id ?? '');
   return {
@@ -79,5 +128,6 @@ export function mapGcfBrowseDocument(document: Document) {
           completeCount: numberOr(document.complete_bgc_count),
           memberCount: numberOr(document.member_bgc_count),
         },
+    ...mapShareFields(document),
   };
 }

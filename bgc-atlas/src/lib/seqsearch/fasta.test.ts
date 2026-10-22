@@ -89,6 +89,21 @@ describe('validateFastaSequence — structure', () => {
     expect(result.sequences.map(s => s.header)).toEqual(['>q1', '>q2']);
   });
 
+  it('rejects two sequences DIAMOND would report under one id, naming it', () => {
+    const result = validateFastaSequence(`>kcn first\n${protein}\n>kcn second\n${protein}`);
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/"kcn"/);
+  });
+
+  it('accepts ids that only share a prefix', () => {
+    expect(validateFastaSequence(`>kcn\n${protein}\n>kcn2\n${protein}`).valid).toBe(true);
+  });
+
+  it('catches a named record colliding with a generated query_<n> id', () => {
+    const fasta = normalizeToFasta(`>query_2\n${protein}\n>\n${protein}`);
+    expect(validateFastaSequence(fasta).error).toMatch(/"query_2"/);
+  });
+
   it('rejects more than 100 sequences', () => {
     const many = Array.from({ length: 101 }, (_, i) => `>q${i}\n${protein}`).join('\n');
     const result = validateFastaSequence(many);
@@ -152,5 +167,30 @@ describe('validateFastaSequence — bare input is accepted', () => {
     const result = validateFastaSequence(normalizeToFasta(protein));
     expect(result.valid).toBe(true);
     expect(result.sequenceType).toBe('protein');
+  });
+});
+
+describe('normalizeToFasta — query ids DIAMOND can report', () => {
+  it('removes whitespace between ">" and the id', () => {
+    // DIAMOND's query id is the first word, so "> kcn" was reported as an empty id.
+    expect(normalizeToFasta('> kcn\nMAAEPARWYF')).toBe('>kcn\nMAAEPARWYF');
+    expect(normalizeToFasta('>\t  kcn  my protein\nMAAEPARWYF')).toBe('>kcn  my protein\nMAAEPARWYF');
+  });
+
+  it('names a header that has no id at all', () => {
+    expect(normalizeToFasta('>\nMAAEP\n>  \nMKVLA\n>b\nMQQQQ')).toBe('>query_1\nMAAEP\n>query_2\nMKVLA\n>b\nMQQQQ');
+  });
+
+  it('makes Windows line endings \\n, which would otherwise ride along into query.fasta', () => {
+    expect(normalizeToFasta('> kcn\r\nMAAEPARWYF\r\nSLRSPYSW\r\n')).toBe('>kcn\nMAAEPARWYF\nSLRSPYSW');
+  });
+
+  it('returns clean input byte for byte, so its sequence hash does not change', () => {
+    const clean = '>q1 desc\nMAAEPARWYF\n>q2\nMKVLAAGIVG';
+    expect(normalizeToFasta(clean)).toBe(clean);
+  });
+
+  it('still gives a bare pasted sequence its header', () => {
+    expect(normalizeToFasta('MAAEPARWYF')).toBe('>query\nMAAEPARWYF');
   });
 });

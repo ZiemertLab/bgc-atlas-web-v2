@@ -1,15 +1,20 @@
 import { API_ENDPOINTS } from '@/lib/api-catalog';
+import { getCorpusFigures, type CorpusFigures } from '@/lib/corpus-figures';
+import { CURRENT_CLUSTERING } from '@/lib/clustering';
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? 'https://bgc-atlas.cs.uni-tuebingen.de';
 
-export const dynamic = 'force-static';
+//
+// The totals are read from the database (lib/corpus-figures.ts): written in by
+// hand they went stale with every cohort load. Rebuilt at most hourly.
+export const revalidate = 3600;
 
-const body = `# BGC Atlas
+const body = (f: CorpusFigures) => `# BGC Atlas
 
-> ${(15985022).toLocaleString('en-US')} biosynthetic gene clusters (BGCs) detected in public metagenome
+> ${f.bgcs.toLocaleString('en-US')} biosynthetic gene clusters (BGCs) detected in public metagenome
 > assemblies, metagenome-assembled genomes, single-amplified genomes and
-> isolate genomes, grouped into ${(614215).toLocaleString('en-US')} gene cluster families (GCFs) and
+> isolate genomes, grouped into ${f.families.toLocaleString('en-US')} gene cluster families (GCFs) and
 > annotated with the taxonomy and the environment each one came from.
 
 Built and maintained in the Translational Genome Mining for Natural Products
@@ -23,7 +28,8 @@ group at the University of Tübingen.
 - **GCF** — a family of related BGCs from BiG-SLiCE clustering. Named
   \`GCF-v2b6-000001\` (the tag is the data release the clustering first shipped
   in) and given a two-word alias such as \`gallant-greenshank\`. A family
-  named after a characterized compound is MIBiG-anchored.
+  with a characterized MIBiG reference cluster among its members is
+  MIBiG-anchored, and carries the name of the compound it makes.
 - **Sample** — the environmental sample or genome an assembly came from, with
   coordinates where the source reported them, GOLD ecosystem path and ENVO terms.
 - **Study** — the project a set of samples belongs to, ranked on the site by the
@@ -35,7 +41,7 @@ group at the University of Tübingen.
 - **Unclustered does not mean novel.** About 11% of BGCs join no family, and
   those regions are short — a median of 2 genes. It is a fragment-size effect.
 - **Never read a GCF count without its coverage.** Coverage varies by study,
-  so any family count is bounded by what could be placed at all: 89.4% of BGCs
+  so any family count is bounded by what could be placed at all: ${CURRENT_CLUSTERING.figures.clusteredPercent}% of BGCs
   overall join a family, but a tenth of studies with 100 or more BGCs are below 81%. Clustered and
   unclustered counts belong side by side.
 - **Product categories are multi-label.** A BGC can carry several, so category
@@ -86,8 +92,8 @@ diversity encoded in bacterial genomes. Nucleic Acids Research 53(D1):D618–D62
 (2025). https://doi.org/10.1093/nar/gkae953
 `;
 
-export function GET() {
-  return new Response(body, {
+export async function GET() {
+  return new Response(body(await getCorpusFigures()), {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'public, max-age=3600',

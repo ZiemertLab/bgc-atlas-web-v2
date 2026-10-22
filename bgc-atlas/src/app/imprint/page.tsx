@@ -76,7 +76,7 @@ export default function ImprintPage() {
               <p className="mb-4">The information on this website has been carefully compiled and checked to the best of our knowledge and belief. However, no guarantee – neither explicit nor implicit – is given for the completeness, correctness or topicality nor of the availability of the information provided at any time. Liability for damages resulting from the use or non-use of the information provided on this website is – as far as legally permissible – excluded.</p>
 
               <h5 className="mt-6">Responsible</h5>
-              <p className="mb-0">Prof. Dr. Nadine Ziemert<br/>Auf der Morgenstelle 24<br/>72076 Tübingen<br/>Phone: +49 7071 29788441<br/>E-Mail: nadine.ziemert@uni-tuebingen.de</p>
+              <p className="mb-0">Prof. Dr. Nadine Ziemert<br/>Auf der Morgenstelle 24<br/>72076 Tübingen<br/>Phone: +49 7071 2978841<br/>E-Mail: nadine.ziemert@uni-tuebingen.de</p>
         </div>
       </div>
     </MainLayout>

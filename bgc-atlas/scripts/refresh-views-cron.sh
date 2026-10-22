@@ -75,7 +75,7 @@ fi
 # statistics:bgcs:* has a 300s TTL and is omitted from both.
 PATTERNS=(
   'stats:global:*'
-  'stats:gcfs:global'
+  'stats:gcfs:global*'
   'statistics:samples:*'
   'statistics:genomes:*'
   'gcf:stats'

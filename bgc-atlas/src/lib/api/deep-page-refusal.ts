@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { BROWSE_RESULT_WINDOW } from '@/lib/opensearch/deep-paging';
+import { DEEP_PAGE_CODE } from '@/lib/api/refusal-codes';
 
 // Backstop for deep offsets the PostgreSQL fallback cannot serve: they hold a connection until
 // the statement timeout and then 500. If this fires for ordinary browsing, check OpenSearch.
@@ -12,7 +13,7 @@ export const deepPageRefusal = (offset: number, limit: number): NextResponse | n
     + 'Narrow your filters or change the sort, then page again.';
 
   return NextResponse.json(
-    { success: false, error: message, message, rejected: [] },
+    { success: false, code: DEEP_PAGE_CODE, error: message, message, rejected: [] },
     { status: 400 },
   );
 };

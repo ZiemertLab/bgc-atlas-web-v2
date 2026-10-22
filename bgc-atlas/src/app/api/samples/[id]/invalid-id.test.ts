@@ -35,6 +35,7 @@ import { GET as sourceTypes } from './source-types/route';
 import { GET as assemblies } from './assemblies/route';
 import { GET as measurements } from './measurements/route';
 import { GET as studies } from './studies/route';
+import { GET as detail } from './route';
 
 type Handler = (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>;
 
@@ -68,6 +69,34 @@ describe('sample sub-routes reject non-uuid ids', () => {
       });
     }
   }
+
+  // The detail route answered 404 for these before the guard (a text comparison that never
+  // matched), so it keeps 404 -- but without the query, which scanned all of sample_summary.
+  for (const id of BAD_IDS) {
+    it(`detail: ${id} -> 404 without touching the database or cache`, async () => {
+      const res = await (detail as Handler)(
+        new Request(`http://localhost/api/samples/${encodeURIComponent(id)}`),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(404);
+      expect(queryRaw).not.toHaveBeenCalled();
+      expect(cacheGet).not.toHaveBeenCalled();
+    });
+  }
+
+  it('detail: a well-formed uuid is looked up by uuid, not as text', async () => {
+    cacheGet.mockResolvedValue(null);
+    queryRaw.mockResolvedValue([]);
+    const id = '81d1e103-a4cc-554a-ab8a-4a0864bbf843';
+    const res = await (detail as Handler)(new Request(`http://localhost/api/samples/${id}`), {
+      params: Promise.resolve({ id }),
+    });
+    expect(res.status).toBe(404);
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const sql = (queryRaw.mock.calls[0][0] as { strings: string[] }).strings.join('?');
+    expect(sql).toContain('sb.id = ?::uuid');
+    expect(sql).not.toContain('::text');
+  });
 
   it('a well-formed uuid still reaches the query', async () => {
     cacheGet.mockResolvedValue(null);

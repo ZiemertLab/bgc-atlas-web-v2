@@ -35,3 +35,8 @@ export const DATA_SOURCE_EXPANSION: Record<string, string[]> = {
     old, DATA_SOURCE_GROUPS.find((g) => g.label === current)!.raw,
   ])),
 };
+
+// raw index value -> curated label (for displaying stored/exported values).
+export const DATA_SOURCE_LABEL: Record<string, string> = Object.fromEntries(
+  DATA_SOURCE_GROUPS.flatMap((g) => g.raw.map((r) => [r, g.label] as const)),
+);

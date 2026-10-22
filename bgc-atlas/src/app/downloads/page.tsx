@@ -10,6 +10,7 @@ import { clusteredText, releasePath, type ReleaseFile, type ReleaseSummary } fro
 import { finalOf, useReleases } from '@/lib/releases/use-releases';
 import { Download } from 'lucide-react';
 import Link from 'next/link';
+import { formatReleaseSize } from '@/lib/releases/format-size';
 
 // What is published, and in what order. Sizes, record counts and the release come from the latest
 // release's manifest.json (scripts/export/cut_release.py), so cutting a release needs no deploy. What each
@@ -97,17 +98,7 @@ const RECORD_UNITS: Record<string, string> = {
   'regions_prot.faa': 'proteins',
 };
 
-/** Binary units labelled GB, as this page always has (the 181 GB archive is 166.5 of these). */
-function formatSize(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i += 1;
-  }
-  return i === 0 ? `${value} B` : `${value.toFixed(1)} ${units[i]}`;
-}
+const formatSize = formatReleaseSize;
 
 const STATUS_LABELS: Record<ReleaseSummary['status'], string> = {
   current: 'Current',

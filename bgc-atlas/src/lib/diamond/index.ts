@@ -7,6 +7,7 @@ import type { SeqSearchHit } from '@/lib/seqsearch/types';
 import { expandBtop } from '@/lib/seqsearch/alignment';
 import { computeCoverages } from './coverage';
 import { buildDiamondArgs } from './args';
+import { appendTail } from '@/lib/utils/output-tail';
 
 export interface DiamondOptions {
   queryFile: string;
@@ -20,6 +21,7 @@ export interface DiamondOptions {
   maxResults?: number;      // Max hits to return (default: 1000)
   threads?: number;         // CPU threads (default: 4)
   logFile?: string;
+  containerName?: string;   // ssh-docker: replaces a container left under this name
 }
 
 export interface DiamondResult {
@@ -45,6 +47,7 @@ export async function runDiamond(options: DiamondOptions): Promise<DiamondResult
     maxResults = 1000,
     threads = seqSearchThreads(),
     logFile,
+    containerName,
   } = options;
 
   try {
@@ -82,7 +85,7 @@ export async function runDiamond(options: DiamondOptions): Promise<DiamondResult
   const mode = sequenceType === 'nucleotide' ? 'blastx' : 'blastp';
 
   const dockerImage = process.env.DIAMOND_DOCKER_IMAGE || 'diamond:latest';
-  const { command, args } = buildSeqSearchCommand(condaEnv, dockerImage, toolArgs);
+  const { command, args } = buildSeqSearchCommand(condaEnv, dockerImage, toolArgs, containerName);
   const commandString = `${command} ${args.join(' ')}`;
   console.log(`Executing DIAMOND ${mode}: ${commandString}`);
 
@@ -99,13 +102,13 @@ export async function runDiamond(options: DiamondOptions): Promise<DiamondResult
 
     child.stdout?.on('data', (data) => {
       const chunk = data.toString();
-      stdout += chunk;
+      stdout = appendTail(stdout, chunk);
       logStream?.write(chunk);
     });
 
     child.stderr?.on('data', (data) => {
       const chunk = data.toString();
-      stderr += chunk;
+      stderr = appendTail(stderr, chunk);
       logStream?.write(chunk);
     });
 
@@ -160,12 +163,12 @@ export async function parseDiamondResults(
 ): Promise<DiamondHit[]> {
   try {
     const content = await readFile(tsvFile, 'utf-8');
-    const lines = content.trim().split('\n');
-
-    if (lines.length === 0) {
-      console.log('No results found in DIAMOND output');
-      return [];
-    }
+    // Rows are split, never trimmed: a field may be empty at either end of a row (an
+    // empty query id first, an empty btop last), and content.trim() stripped the
+    // first row's leading tab, moving every value one column left -- identity read
+    // the alignment length, target_length came up empty, and the whole search was
+    // lost at the INSERT (session 8c49438b, 2026-10-20).
+    const lines = content.split('\n').map((line) => line.replace(/\r$/, ''));
 
     const hits: DiamondHit[] = [];
 

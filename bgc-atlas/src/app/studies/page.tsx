@@ -2,10 +2,11 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { AlertCircle, ChevronDown, ChevronRight, Filter, Search } from 'lucide-react';
 
 import { MainLayout } from '@/components/layout/main-layout';
+import { useExternalNavigationKey, useMirrorToUrl } from '@/lib/hooks/use-mirror-to-url';
 import { ResizableTable, type TableColumn } from '@/components/ui/resizable-table';
 import { StudyDetailsPanel } from '@/components/ui/study-details-panel';
 import { Pagination } from '@/components/ui/pagination';
@@ -37,8 +38,10 @@ import { ExportMenu } from '@/components/ui/export-menu';
 import { downloadText, exportFilename, serializeExport, type ExportFormat } from '@/lib/export/format';
 import { STUDY_EXPORT_COLUMNS } from '@/lib/export/study-columns';
 import type { Study } from '@/lib/types';
+import { UMBRELLA_STUDIES } from '@/lib/studies/umbrella-studies';
 import { studyFilterFields } from '@/lib/filters/field-definitions';
 import { studyFilterRecipes } from '@/lib/filters/recipes';
+import { studyTitle } from '@/lib/utils/accession';
 import {
   createDefaultFilterGroup,
   deserializeFilterGroup,
@@ -74,15 +77,24 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 export default function StudiesPage() {
   return (
     <Suspense fallback={null}>
-      <StudiesPageInner />
+      <StudiesPageKeyed />
     </Suspense>
   );
 }
 
+/** Remounts the page on a same-route navigation it did not write -- the nav's bare
+ *  /studies while on /studies?search=x, Back between two searches -- so it re-seeds
+ *  from the URL like a fresh visit (see useMirrorToUrl). Without it the old search
+ *  stayed applied under a bare URL. */
+function StudiesPageKeyed() {
+  const navKey = useExternalNavigationKey();
+  return <StudiesPageInner key={navKey} />;
+}
+
 function StudiesPageInner() {
   const searchParams = useSearchParams();
-  const pathname = usePathname();
-  const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const [searchInput, setSearchInput] = useState(() => searchParams.get('search') ?? '');
   const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
@@ -173,37 +185,21 @@ function StudiesPageInner() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Reads window.location, not the searchParams hook, so foreign params survive and
-  // the effect cannot retrigger itself through router.replace.
-  useEffect(() => {
-    if (!pathname) return;
-    const params = new URLSearchParams(window.location.search);
-    const setOrDelete = (key: string, value: string | null) => {
-      if (value === null) params.delete(key);
-      else params.set(key, value);
-    };
-
-    setOrDelete('search', search || null);
-    setOrDelete('sort', sortField === DEFAULT_SORT_FIELD ? null : sortField);
-    setOrDelete('order', sortOrder === DEFAULT_SORT_ORDER ? null : sortOrder);
-    setOrDelete('page', page > 0 ? String(page + 1) : null);
-    setOrDelete('size', pageSize === DEFAULT_PAGE_SIZE ? null : String(pageSize));
-    // The forwarded value, not the encoded state, so an unreadable value is not dropped.
-    setOrDelete('advancedFilters', advancedFiltersRequestParam ?? null);
-
-    const query = params.toString();
-    if (query === window.location.search.replace(/^\?/, '')) return;
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
-  }, [
-    search,
-    sortField,
-    sortOrder,
-    page,
-    pageSize,
-    advancedFiltersRequestParam,
-    pathname,
-    router,
-  ]);
+  // Mirror state back into the URL through the shared writer (one writer per page:
+  // replace not push, defaults omitted, and its writes are told apart from outside
+  // navigations). The forwarded advancedFilters value, not the encoded state, so an
+  // unreadable link keeps its evidence in the URL.
+  useMirrorToUrl(
+    [
+      ['search', search],
+      ['sort', sortField, DEFAULT_SORT_FIELD],
+      ['order', sortOrder, DEFAULT_SORT_ORDER],
+      ['page', page + 1, 1],
+      ['size', pageSize, DEFAULT_PAGE_SIZE],
+      ['advancedFilters', advancedFiltersRequestParam ?? ''],
+    ],
+    mounted,
+  );
 
   const listParams = {
     search: search || undefined,
@@ -219,9 +215,19 @@ function StudiesPageInner() {
 
   const studies = data.data.data;
   const total = data.data.total;
+  // Umbrella projects counted but not listed; null once a search or filter applies.
+  const unlisted = data.data.unlisted ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const showSkeleton = isLoading && !hasLoaded;
   const hasActiveFilters = Boolean(search) || hasAdvancedFiltersApplied;
+
+  // A ?page= past the end -- an old link, a hand-edited URL -- showed "Showing
+  // 49,901-44,265 of 44,265" over an empty table. Once the answer for the current
+  // query is in, step back to its last page.
+  useEffect(() => {
+    if (!hasLoaded || isFetching || page === 0) return;
+    if (page > totalPages - 1) setPage(totalPages - 1);
+  }, [hasLoaded, isFetching, page, totalPages]);
 
 
   const handleSort = (columnId: string, direction: 'asc' | 'desc') => {
@@ -290,9 +296,9 @@ function StudiesPageInner() {
                 <Link
                   href={`/studies/${s.study_id}`}
                   className="truncate font-medium hover:text-brand hover:underline"
-                  title={s.title || s.study_name || s.study_key}
+                  title={studyTitle(s)}
                 >
-                  {s.title || s.study_name || s.study_key}
+                  {studyTitle(s)}
                 </Link>
               </div>
               {/* A real separator character, so copied text does not run together. */}
@@ -554,7 +560,16 @@ function StudiesPageInner() {
             align="start"
           />
           <span className="ml-auto text-sm text-muted-foreground">
-            {error ? '—' : hasLoaded ? `${total.toLocaleString()} studies` : 'Loading…'}
+            {error ? '—' : hasLoaded ? (
+              unlisted > 0 ? (
+                <>
+                  {`${(total + unlisted).toLocaleString()} studies`}
+                  <a href="#unlisted-studies" aria-label="Note on unlisted studies" className="hover:text-foreground">
+                    <sup>1</sup>
+                  </a>
+                </>
+              ) : `${total.toLocaleString()} studies`
+            ) : 'Loading…'}
           </span>
         </div>
 
@@ -669,6 +684,23 @@ function StudiesPageInner() {
         )}
 
         {!error && hasLoaded && total > 0 && <div className="mt-4">{pagination}</div>}
+
+        {!error && hasLoaded && unlisted > 0 && (
+          <p id="unlisted-studies" className="mt-6 max-w-3xl text-xs text-muted-foreground">
+            <sup>1</sup> Includes {unlisted.toLocaleString()} NCBI umbrella projects that are not
+            listed here because each spans thousands of unrelated genomes:{' '}
+            {UMBRELLA_STUDIES.map((s, i) => (
+              <span key={s.key}>
+                {i > 0 && (i === UMBRELLA_STUDIES.length - 1 ? ' and ' : ', ')}
+                <Link href={`/studies/${s.id}`} className="underline underline-offset-2 hover:text-foreground">
+                  {s.name}
+                </Link>{' '}
+                ({s.key})
+              </span>
+            ))}
+            . Each still has its own page.
+          </p>
+        )}
       </div>
     </MainLayout>
   );

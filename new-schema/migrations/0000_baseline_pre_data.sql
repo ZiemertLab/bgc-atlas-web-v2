@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict vjxT04EF3afXjUNrSLQDxvFDg5Qe76TtQxUa9ziSPzbXomRtaCEKPtrgGbdhpai
+\restrict VJhdtnLN3VebZAgRBVvJMI87tHSVKzjHusmOyndbGT1eU3uD4ZvQ3D74KcvepPF
 
 -- Dumped from database version 18.6 (Ubuntu 18.6-1.pgdg22.04+2)
 -- Dumped by pg_dump version 18.6 (Ubuntu 18.6-1.pgdg22.04+2)
@@ -242,6 +242,54 @@ CREATE TABLE public.assembly_analyses (
     analysis_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now()
 );
+
+
+--
+-- Name: bgcs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bgcs (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    filename text NOT NULL,
+    assembly uuid NOT NULL,
+    analysis_id uuid,
+    antismash_run_id uuid,
+    contig text NOT NULL,
+    start_pos integer NOT NULL,
+    end_pos integer NOT NULL,
+    core_start_pos integer,
+    core_end_pos integer,
+    product_category text[] DEFAULT '{}'::text[] NOT NULL,
+    product text[] DEFAULT '{}'::text[] CONSTRAINT bgcs_product_type_not_null NOT NULL,
+    anchor character varying(15),
+    gc_content numeric(5,4),
+    detection_tool character varying(100),
+    cutoff_distance integer,
+    num_cds_features integer,
+    num_domains integer,
+    tax_id integer,
+    is_complete boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT bgcs_check CHECK ((end_pos >= start_pos)),
+    CONSTRAINT bgcs_start_pos_check CHECK ((start_pos >= 0)),
+    CONSTRAINT chk_core_coordinates CHECK (((core_start_pos IS NULL) OR ((core_start_pos >= start_pos) AND (core_end_pos <= end_pos)))),
+    CONSTRAINT chk_gc_content CHECK (((gc_content IS NULL) OR ((gc_content >= 0.0) AND (gc_content <= 1.0))))
+)
+WITH (autovacuum_vacuum_scale_factor='0.05', autovacuum_analyze_scale_factor='0.02', autovacuum_vacuum_threshold='50000', autovacuum_analyze_threshold='25000');
+ALTER TABLE ONLY public.bgcs ALTER COLUMN assembly SET (n_distinct=-0.049);
+
+
+--
+-- Name: assembly_bgc_counts_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.assembly_bgc_counts_mv AS
+ SELECT assembly AS assembly_id,
+    (count(*))::integer AS bgc_count
+   FROM public.bgcs
+  GROUP BY assembly
+  WITH NO DATA;
 
 
 --
@@ -769,41 +817,6 @@ COMMENT ON COLUMN public.assembly_taxonomy.taxonomy_id IS 'NULL when the consens
 --
 
 COMMENT ON COLUMN public.assembly_taxonomy.agreement IS 'Share of voting BGCs backing the lineage at its deepest rank; NULL for genome-derived rows.';
-
-
---
--- Name: bgcs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.bgcs (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
-    filename text NOT NULL,
-    assembly uuid NOT NULL,
-    analysis_id uuid,
-    antismash_run_id uuid,
-    contig text NOT NULL,
-    start_pos integer NOT NULL,
-    end_pos integer NOT NULL,
-    core_start_pos integer,
-    core_end_pos integer,
-    product_category text[] DEFAULT '{}'::text[] NOT NULL,
-    product text[] DEFAULT '{}'::text[] CONSTRAINT bgcs_product_type_not_null NOT NULL,
-    anchor character varying(15),
-    gc_content numeric(5,4),
-    detection_tool character varying(100),
-    cutoff_distance integer,
-    num_cds_features integer,
-    num_domains integer,
-    tax_id integer,
-    is_complete boolean DEFAULT true,
-    created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now(),
-    CONSTRAINT bgcs_check CHECK ((end_pos >= start_pos)),
-    CONSTRAINT bgcs_start_pos_check CHECK ((start_pos >= 0)),
-    CONSTRAINT chk_core_coordinates CHECK (((core_start_pos IS NULL) OR ((core_start_pos >= start_pos) AND (core_end_pos <= end_pos)))),
-    CONSTRAINT chk_gc_content CHECK (((gc_content IS NULL) OR ((gc_content >= 0.0) AND (gc_content <= 1.0))))
-)
-WITH (autovacuum_vacuum_scale_factor='0.05', autovacuum_analyze_scale_factor='0.02', autovacuum_vacuum_threshold='50000', autovacuum_analyze_threshold='25000');
 
 
 --
@@ -2073,103 +2086,26 @@ COMMENT ON MATERIALIZED VIEW public.gcf_category_combination_mv IS 'Primary memb
 
 
 --
--- Name: gcf_gold_ecosystem_distribution_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+-- Name: gcf_member_ecosystem_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
 --
 
-CREATE MATERIALIZED VIEW public.gcf_gold_ecosystem_distribution_mv AS
- WITH gcf_gold_paths AS (
-         SELECT bg.gcf_id,
-            split_part(ss.gold_ecosystem_path, ':'::text, 1) AS gold_level_1,
-            split_part(ss.gold_ecosystem_path, ':'::text, 2) AS gold_level_2,
-            split_part(ss.gold_ecosystem_path, ':'::text, 3) AS gold_level_3,
-            split_part(ss.gold_ecosystem_path, ':'::text, 4) AS gold_level_4,
-            split_part(ss.gold_ecosystem_path, ':'::text, 5) AS gold_level_5,
-            b.id AS bgc_id
-           FROM ((((public.bgcs b
-             JOIN public.bgc_gcf bg ON (((bg.bgc_id = b.id) AND bg.is_primary)))
-             JOIN public.assemblies a ON ((b.assembly = a.id)))
-             JOIN public.sample_assemblies sa ON ((sa.assembly_id = a.id)))
-             JOIN public.sample_summary ss ON ((ss.id = sa.sample_id)))
-          WHERE ((ss.gold_ecosystem_path IS NOT NULL) AND (ss.gold_ecosystem_path <> ''::text))
-        ), level_1_counts AS (
-         SELECT gcf_gold_paths.gcf_id,
-            1 AS level,
-            gcf_gold_paths.gold_level_1 AS ecosystem,
-            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
-           FROM gcf_gold_paths
-          WHERE ((gcf_gold_paths.gold_level_1 IS NOT NULL) AND (gcf_gold_paths.gold_level_1 <> ''::text))
-          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_1
-        ), level_2_counts AS (
-         SELECT gcf_gold_paths.gcf_id,
-            2 AS level,
-            gcf_gold_paths.gold_level_2 AS ecosystem,
-            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
-           FROM gcf_gold_paths
-          WHERE ((gcf_gold_paths.gold_level_2 IS NOT NULL) AND (gcf_gold_paths.gold_level_2 <> ''::text))
-          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_2
-        ), level_3_counts AS (
-         SELECT gcf_gold_paths.gcf_id,
-            3 AS level,
-            gcf_gold_paths.gold_level_3 AS ecosystem,
-            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
-           FROM gcf_gold_paths
-          WHERE ((gcf_gold_paths.gold_level_3 IS NOT NULL) AND (gcf_gold_paths.gold_level_3 <> ''::text))
-          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_3
-        ), level_4_counts AS (
-         SELECT gcf_gold_paths.gcf_id,
-            4 AS level,
-            gcf_gold_paths.gold_level_4 AS ecosystem,
-            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
-           FROM gcf_gold_paths
-          WHERE ((gcf_gold_paths.gold_level_4 IS NOT NULL) AND (gcf_gold_paths.gold_level_4 <> ''::text))
-          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_4
-        ), level_5_counts AS (
-         SELECT gcf_gold_paths.gcf_id,
-            5 AS level,
-            gcf_gold_paths.gold_level_5 AS ecosystem,
-            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
-           FROM gcf_gold_paths
-          WHERE ((gcf_gold_paths.gold_level_5 IS NOT NULL) AND (gcf_gold_paths.gold_level_5 <> ''::text))
-          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_5
-        ), all_counts AS (
-         SELECT level_1_counts.gcf_id,
-            level_1_counts.level,
-            level_1_counts.ecosystem,
-            level_1_counts.bgc_count
-           FROM level_1_counts
-        UNION ALL
-         SELECT level_2_counts.gcf_id,
-            level_2_counts.level,
-            level_2_counts.ecosystem,
-            level_2_counts.bgc_count
-           FROM level_2_counts
-        UNION ALL
-         SELECT level_3_counts.gcf_id,
-            level_3_counts.level,
-            level_3_counts.ecosystem,
-            level_3_counts.bgc_count
-           FROM level_3_counts
-        UNION ALL
-         SELECT level_4_counts.gcf_id,
-            level_4_counts.level,
-            level_4_counts.ecosystem,
-            level_4_counts.bgc_count
-           FROM level_4_counts
-        UNION ALL
-         SELECT level_5_counts.gcf_id,
-            level_5_counts.level,
-            level_5_counts.ecosystem,
-            level_5_counts.bgc_count
-           FROM level_5_counts
-        )
- SELECT gcf_id,
-    level,
-    ecosystem,
-    bgc_count,
-    sum(bgc_count) OVER (PARTITION BY gcf_id, level) AS total_bgcs_at_level,
-    round((((bgc_count)::numeric / NULLIF(sum(bgc_count) OVER (PARTITION BY gcf_id, level), (0)::numeric)) * (100)::numeric), 1) AS percentage
-   FROM all_counts
+CREATE MATERIALIZED VIEW public.gcf_member_ecosystem_mv AS
+ SELECT bg.gcf_id,
+    COALESCE(asm.gold_ecosystem_path, ''::text) AS gold_ecosystem_path,
+    count(*) AS bgc_count
+   FROM ((public.bgc_gcf bg
+     JOIN public.bgcs b ON ((b.id = bg.bgc_id)))
+     LEFT JOIN public.assembly_samples_mv asm ON ((asm.assembly_id = b.assembly)))
+  WHERE bg.is_primary
+  GROUP BY bg.gcf_id, COALESCE(asm.gold_ecosystem_path, ''::text)
   WITH NO DATA;
+
+
+--
+-- Name: MATERIALIZED VIEW gcf_member_ecosystem_mv; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON MATERIALIZED VIEW public.gcf_member_ecosystem_mv IS 'Primary members per GCF per GOLD ecosystem path of the member''s first-ranked sample (assembly_samples_mv''s representative: lowest sample_id). Each member counted ONCE; empty path = unresolved. Source of the ecosystem columns of gcf_distributions_mv. Migration 0156.';
 
 
 --
@@ -2199,6 +2135,31 @@ CREATE MATERIALIZED VIEW public.gcf_product_category_distribution_mv AS
    FROM (category_counts cc
      JOIN gcf_totals gt ON ((cc.gcf_id = gt.gcf_id)))
   WITH NO DATA;
+
+
+--
+-- Name: gcf_product_type_member_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.gcf_product_type_member_mv AS
+ SELECT bg.gcf_id,
+    p.product,
+    count(*) AS bgc_count
+   FROM ((public.bgc_gcf bg
+     JOIN public.bgcs b ON ((b.id = bg.bgc_id)))
+     CROSS JOIN LATERAL ( SELECT DISTINCT u.product
+           FROM unnest(b.product) u(product)
+          WHERE ((u.product IS NOT NULL) AND (u.product <> ''::text))) p)
+  WHERE bg.is_primary
+  GROUP BY bg.gcf_id, p.product
+  WITH NO DATA;
+
+
+--
+-- Name: MATERIALIZED VIEW gcf_product_type_member_mv; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON MATERIALIZED VIEW public.gcf_product_type_member_mv IS 'Primary members per GCF per antiSMASH product (bgcs.product element), each member counted once per product. Source of gcf_distributions_mv.product_type_member_share. Migration 0156.';
 
 
 --
@@ -2303,83 +2264,99 @@ COMMENT ON TABLE public.gcf_taxonomy_distribution_mv IS 'clustering-v2 cutover: 
 --
 
 CREATE MATERIALIZED VIEW public.gcf_distributions_mv AS
- WITH eco_l1 AS (
-         SELECT d.gcf_id,
-            d.ecosystem,
-            d.bgc_count,
-            d.total_bgcs_at_level
-           FROM public.gcf_gold_ecosystem_distribution_mv d
-          WHERE (d.level = 1)
-        ), eco_l2_plants AS (
-         SELECT d.gcf_id,
-            d.bgc_count AS plants_count
-           FROM public.gcf_gold_ecosystem_distribution_mv d
-          WHERE ((d.level = 2) AND (d.ecosystem = 'Plants'::text))
-        ), eco_l1_split AS (
-         SELECT s_1.gcf_id,
-            s_1.ecosystem,
-            s_1.bgc_count,
-            s_1.total_bgcs_at_level
-           FROM ( SELECT l1.gcf_id,
-                    l1.ecosystem,
+ WITH eco_src AS (
+         SELECT m.gcf_id,
+            m.bgc_count,
+            split_part(m.gold_ecosystem_path, ':'::text, 1) AS s1,
+            split_part(m.gold_ecosystem_path, ':'::text, 2) AS s2,
+            split_part(m.gold_ecosystem_path, ':'::text, 3) AS s3,
+            split_part(m.gold_ecosystem_path, ':'::text, 4) AS s4,
+            split_part(m.gold_ecosystem_path, ':'::text, 5) AS s5
+           FROM public.gcf_member_ecosystem_mv m
+        ), eco_tot AS (
+         SELECT e.gcf_id,
+            sum(e.bgc_count) AS members,
+            COALESCE(sum(e.bgc_count) FILTER (WHERE (e.s1 <> ''::text)), (0)::numeric) AS r1,
+            COALESCE(sum(e.bgc_count) FILTER (WHERE (e.s2 <> ''::text)), (0)::numeric) AS r2,
+            COALESCE(sum(e.bgc_count) FILTER (WHERE (e.s3 <> ''::text)), (0)::numeric) AS r3,
+            COALESCE(sum(e.bgc_count) FILTER (WHERE (e.s4 <> ''::text)), (0)::numeric) AS r4,
+            COALESCE(sum(e.bgc_count) FILTER (WHERE (e.s5 <> ''::text)), (0)::numeric) AS r5
+           FROM eco_src e
+          GROUP BY e.gcf_id
+        ), eco_seg AS (
+         SELECT e.gcf_id,
+            l.level,
+            l.ecosystem,
+            sum(e.bgc_count) AS bgc_count
+           FROM (eco_src e
+             CROSS JOIN LATERAL ( VALUES (1,
                         CASE
-                            WHEN (l1.ecosystem = 'Host-associated'::text) THEN (l1.bgc_count - COALESCE(p.plants_count, (0)::bigint))
-                            ELSE l1.bgc_count
-                        END AS bgc_count,
-                    l1.total_bgcs_at_level
-                   FROM (eco_l1 l1
-                     LEFT JOIN eco_l2_plants p ON ((p.gcf_id = l1.gcf_id)))
-                UNION ALL
-                 SELECT l1.gcf_id,
-                    'Host-assoc.: Plants'::text AS ecosystem,
-                    p.plants_count AS bgc_count,
-                    l1.total_bgcs_at_level
-                   FROM (eco_l1 l1
-                     JOIN eco_l2_plants p ON ((p.gcf_id = l1.gcf_id)))
-                  WHERE (l1.ecosystem = 'Host-associated'::text)) s_1
-          WHERE (s_1.bgc_count > 0)
-        ), eco_l1_pct AS (
-         SELECT eco_l1_split.gcf_id,
-            1 AS level,
-            eco_l1_split.ecosystem,
-            round((((eco_l1_split.bgc_count)::numeric / NULLIF(eco_l1_split.total_bgcs_at_level, (0)::numeric)) * (100)::numeric), 1) AS percentage
-           FROM eco_l1_split
-        ), eco_all AS (
-         SELECT d.gcf_id,
-            d.level,
-            d.ecosystem,
-            d.percentage
-           FROM public.gcf_gold_ecosystem_distribution_mv d
-          WHERE (d.level <> 1)
-        UNION ALL
-         SELECT eco_l1_pct.gcf_id,
-            eco_l1_pct.level,
-            eco_l1_pct.ecosystem,
-            eco_l1_pct.percentage
-           FROM eco_l1_pct
-        ), eco AS (
-         SELECT s_1.gcf_id,
-            d.level,
-            d.ecosystem,
-            d.percentage
-           FROM (public.gcf_summary_mv s_1
-             LEFT JOIN eco_all d ON ((d.gcf_id = s_1.gcf_id)))
+                            WHEN ((e.s1 = 'Host-associated'::text) AND (e.s2 = 'Plants'::text)) THEN 'Host-assoc.: Plants'::text
+                            ELSE e.s1
+                        END), (2,e.s2), (3,e.s3), (4,e.s4), (5,e.s5)) l(level, ecosystem))
+          WHERE (l.ecosystem <> ''::text)
+          GROUP BY e.gcf_id, l.level, l.ecosystem
+        ), eco_pct AS (
+         SELECT g.gcf_id,
+            g.level,
+            g.ecosystem,
+            round(((g.bgc_count / NULLIF(r.resolved, (0)::numeric)) * (100)::numeric), 1) AS pct1,
+            round(((g.bgc_count / NULLIF(r.resolved, (0)::numeric)) * (100)::numeric), 2) AS pct2
+           FROM ((eco_seg g
+             JOIN eco_tot t ON ((t.gcf_id = g.gcf_id)))
+             CROSS JOIN LATERAL ( SELECT
+                        CASE g.level
+                            WHEN 1 THEN t.r1
+                            WHEN 2 THEN t.r2
+                            WHEN 3 THEN t.r3
+                            WHEN 4 THEN t.r4
+                            ELSE t.r5
+                        END AS resolved) r)
         ), eco_per_level AS (
-         SELECT eco.gcf_id,
-            eco.level,
-            jsonb_object_agg(eco.ecosystem, eco.percentage) FILTER (WHERE (eco.ecosystem IS NOT NULL)) AS distribution,
-            max(eco.percentage) AS max_pct,
-            (array_agg(eco.ecosystem ORDER BY eco.percentage DESC NULLS LAST, eco.ecosystem))[1] AS dom_ecosystem
-           FROM eco
-          WHERE (eco.level IS NOT NULL)
-          GROUP BY eco.gcf_id, eco.level
+         SELECT p.gcf_id,
+            p.level,
+            jsonb_object_agg(p.ecosystem, p.pct1) AS distribution,
+            max(p.pct1) AS max_pct,
+            (array_agg(p.ecosystem ORDER BY p.pct1 DESC NULLS LAST, p.ecosystem))[1] AS dom_ecosystem,
+            array_agg(p.ecosystem ORDER BY p.pct2 DESC, p.ecosystem) FILTER (WHERE (p.pct2 >= (10)::numeric)) AS ge10,
+            array_agg(p.ecosystem ORDER BY p.pct2 DESC, p.ecosystem) FILTER (WHERE (p.pct2 >= (50)::numeric)) AS ge50,
+            array_agg(p.ecosystem ORDER BY p.pct2 DESC, p.ecosystem) FILTER (WHERE (p.pct2 >= (90)::numeric)) AS ge90
+           FROM eco_pct p
+          GROUP BY p.gcf_id, p.level
         ), eco_pivot AS (
-         SELECT eco_per_level.gcf_id,
-            jsonb_object_agg((eco_per_level.level)::text, eco_per_level.distribution) AS by_level,
-            jsonb_object_agg((eco_per_level.level)::text, to_jsonb(eco_per_level.max_pct)) AS max_by_level,
-            jsonb_object_agg((eco_per_level.level)::text, to_jsonb(eco_per_level.dom_ecosystem)) FILTER (WHERE (eco_per_level.dom_ecosystem IS NOT NULL)) AS dom_by_level
-           FROM eco_per_level
-          GROUP BY eco_per_level.gcf_id
+         SELECT x.gcf_id,
+            (array_agg(x.distribution) FILTER (WHERE (x.level = 1)))[1] AS dist_l1,
+            (array_agg(x.distribution) FILTER (WHERE (x.level = 2)))[1] AS dist_l2,
+            (array_agg(x.distribution) FILTER (WHERE (x.level = 3)))[1] AS dist_l3,
+            (array_agg(x.distribution) FILTER (WHERE (x.level = 4)))[1] AS dist_l4,
+            (array_agg(x.distribution) FILTER (WHERE (x.level = 5)))[1] AS dist_l5,
+            max(x.max_pct) FILTER (WHERE (x.level = 1)) AS max_l1,
+            max(x.max_pct) FILTER (WHERE (x.level = 2)) AS max_l2,
+            max(x.max_pct) FILTER (WHERE (x.level = 3)) AS max_l3,
+            max(x.max_pct) FILTER (WHERE (x.level = 4)) AS max_l4,
+            max(x.max_pct) FILTER (WHERE (x.level = 5)) AS max_l5,
+            max(x.dom_ecosystem) FILTER (WHERE (x.level = 1)) AS dom_l1,
+            max(x.dom_ecosystem) FILTER (WHERE (x.level = 2)) AS dom_l2,
+            max(x.dom_ecosystem) FILTER (WHERE (x.level = 3)) AS dom_l3,
+            max(x.dom_ecosystem) FILTER (WHERE (x.level = 4)) AS dom_l4,
+            max(x.dom_ecosystem) FILTER (WHERE (x.level = 5)) AS dom_l5,
+            max(x.ge10) FILTER (WHERE (x.level = 1)) AS l1_ge10,
+            max(x.ge50) FILTER (WHERE (x.level = 1)) AS l1_ge50,
+            max(x.ge90) FILTER (WHERE (x.level = 1)) AS l1_ge90,
+            max(x.ge10) FILTER (WHERE (x.level = 2)) AS l2_ge10,
+            max(x.ge50) FILTER (WHERE (x.level = 2)) AS l2_ge50,
+            max(x.ge90) FILTER (WHERE (x.level = 2)) AS l2_ge90,
+            max(x.ge10) FILTER (WHERE (x.level = 3)) AS l3_ge10,
+            max(x.ge50) FILTER (WHERE (x.level = 3)) AS l3_ge50,
+            max(x.ge90) FILTER (WHERE (x.level = 3)) AS l3_ge90,
+            max(x.ge10) FILTER (WHERE (x.level = 4)) AS l4_ge10,
+            max(x.ge50) FILTER (WHERE (x.level = 4)) AS l4_ge50,
+            max(x.ge90) FILTER (WHERE (x.level = 4)) AS l4_ge90,
+            max(x.ge10) FILTER (WHERE (x.level = 5)) AS l5_ge10,
+            max(x.ge50) FILTER (WHERE (x.level = 5)) AS l5_ge50,
+            max(x.ge90) FILTER (WHERE (x.level = 5)) AS l5_ge90
+           FROM eco_per_level x
+          GROUP BY x.gcf_id
         ), tax_dom AS (
          SELECT t.gcf_id,
             d.taxon AS dom_phylum,
@@ -2409,30 +2386,72 @@ CREATE MATERIALIZED VIEW public.gcf_distributions_mv AS
                      JOIN public.gcf_summary_mv s_3 ON ((s_3.gcf_id = d.gcf_id)))
                   WHERE (s_3.member_bgc_count > 0)) p
           GROUP BY p.gcf_id
+        ), type_share AS (
+         SELECT p.gcf_id,
+            jsonb_object_agg(p.product, p.share) AS shares,
+            array_agg(p.product ORDER BY p.share DESC, p.product) FILTER (WHERE (p.share >= (10)::numeric)) AS ge10,
+            array_agg(p.product ORDER BY p.share DESC, p.product) FILTER (WHERE (p.share >= (50)::numeric)) AS ge50,
+            array_agg(p.product ORDER BY p.share DESC, p.product) FILTER (WHERE (p.share >= (90)::numeric)) AS ge90
+           FROM ( SELECT t.gcf_id,
+                    t.product,
+                    round((((t.bgc_count)::numeric / (NULLIF(s_4.member_bgc_count, 0))::numeric) * (100)::numeric), 2) AS share
+                   FROM (public.gcf_product_type_member_mv t
+                     JOIN public.gcf_summary_mv s_4 ON ((s_4.gcf_id = t.gcf_id)))
+                  WHERE (s_4.member_bgc_count > 0)) p
+          GROUP BY p.gcf_id
         )
  SELECT s.gcf_id,
-    COALESCE(((ep.by_level ->> '1'::text))::jsonb, '{}'::jsonb) AS biome_distribution_l1,
-    COALESCE(((ep.by_level ->> '2'::text))::jsonb, '{}'::jsonb) AS biome_distribution_l2,
-    COALESCE(((ep.by_level ->> '3'::text))::jsonb, '{}'::jsonb) AS biome_distribution_l3,
-    COALESCE(((ep.by_level ->> '4'::text))::jsonb, '{}'::jsonb) AS biome_distribution_l4,
-    COALESCE(((ep.by_level ->> '5'::text))::jsonb, '{}'::jsonb) AS biome_distribution_l5,
-    ((ep.max_by_level ->> '1'::text))::numeric AS max_pct_l1,
-    ((ep.max_by_level ->> '2'::text))::numeric AS max_pct_l2,
-    ((ep.max_by_level ->> '3'::text))::numeric AS max_pct_l3,
-    ((ep.max_by_level ->> '4'::text))::numeric AS max_pct_l4,
-    ((ep.max_by_level ->> '5'::text))::numeric AS max_pct_l5,
-    (ep.dom_by_level ->> '1'::text) AS dom_ecosystem_l1,
-    (ep.dom_by_level ->> '3'::text) AS dom_ecosystem_l3,
+    COALESCE(ep.dist_l1, '{}'::jsonb) AS biome_distribution_l1,
+    COALESCE(ep.dist_l2, '{}'::jsonb) AS biome_distribution_l2,
+    COALESCE(ep.dist_l3, '{}'::jsonb) AS biome_distribution_l3,
+    COALESCE(ep.dist_l4, '{}'::jsonb) AS biome_distribution_l4,
+    COALESCE(ep.dist_l5, '{}'::jsonb) AS biome_distribution_l5,
+    ep.max_l1 AS max_pct_l1,
+    ep.max_l2 AS max_pct_l2,
+    ep.max_l3 AS max_pct_l3,
+    ep.max_l4 AS max_pct_l4,
+    ep.max_l5 AS max_pct_l5,
+    ep.dom_l1 AS dom_ecosystem_l1,
+    ep.dom_l3 AS dom_ecosystem_l3,
     COALESCE(prod.distribution, '{}'::jsonb) AS product_category_distribution,
     td.dom_phylum,
     td.dom_phylum_pct,
     COALESCE(cs.shares, '{}'::jsonb) AS category_member_share,
-    COALESCE(cs.majority, ARRAY[]::text[]) AS majority_categories
-   FROM ((((public.gcf_summary_mv s
+    COALESCE(cs.majority, ARRAY[]::text[]) AS majority_categories,
+    ep.dom_l2 AS dom_ecosystem_l2,
+    ep.dom_l4 AS dom_ecosystem_l4,
+    ep.dom_l5 AS dom_ecosystem_l5,
+    round(((et.r1 / NULLIF(et.members, (0)::numeric)) * (100)::numeric), 2) AS resolved_pct_l1,
+    round(((et.r2 / NULLIF(et.members, (0)::numeric)) * (100)::numeric), 2) AS resolved_pct_l2,
+    round(((et.r3 / NULLIF(et.members, (0)::numeric)) * (100)::numeric), 2) AS resolved_pct_l3,
+    round(((et.r4 / NULLIF(et.members, (0)::numeric)) * (100)::numeric), 2) AS resolved_pct_l4,
+    round(((et.r5 / NULLIF(et.members, (0)::numeric)) * (100)::numeric), 2) AS resolved_pct_l5,
+    COALESCE(ep.l1_ge10, ARRAY[]::text[]) AS eco_l1_ge10,
+    COALESCE(ep.l1_ge50, ARRAY[]::text[]) AS eco_l1_ge50,
+    COALESCE(ep.l1_ge90, ARRAY[]::text[]) AS eco_l1_ge90,
+    COALESCE(ep.l2_ge10, ARRAY[]::text[]) AS eco_l2_ge10,
+    COALESCE(ep.l2_ge50, ARRAY[]::text[]) AS eco_l2_ge50,
+    COALESCE(ep.l2_ge90, ARRAY[]::text[]) AS eco_l2_ge90,
+    COALESCE(ep.l3_ge10, ARRAY[]::text[]) AS eco_l3_ge10,
+    COALESCE(ep.l3_ge50, ARRAY[]::text[]) AS eco_l3_ge50,
+    COALESCE(ep.l3_ge90, ARRAY[]::text[]) AS eco_l3_ge90,
+    COALESCE(ep.l4_ge10, ARRAY[]::text[]) AS eco_l4_ge10,
+    COALESCE(ep.l4_ge50, ARRAY[]::text[]) AS eco_l4_ge50,
+    COALESCE(ep.l4_ge90, ARRAY[]::text[]) AS eco_l4_ge90,
+    COALESCE(ep.l5_ge10, ARRAY[]::text[]) AS eco_l5_ge10,
+    COALESCE(ep.l5_ge50, ARRAY[]::text[]) AS eco_l5_ge50,
+    COALESCE(ep.l5_ge90, ARRAY[]::text[]) AS eco_l5_ge90,
+    COALESCE(ts.shares, '{}'::jsonb) AS product_type_member_share,
+    COALESCE(ts.ge10, ARRAY[]::text[]) AS product_types_ge10,
+    COALESCE(ts.ge50, ARRAY[]::text[]) AS product_types_ge50,
+    COALESCE(ts.ge90, ARRAY[]::text[]) AS product_types_ge90
+   FROM ((((((public.gcf_summary_mv s
      LEFT JOIN eco_pivot ep ON ((ep.gcf_id = s.gcf_id)))
+     LEFT JOIN eco_tot et ON ((et.gcf_id = s.gcf_id)))
      LEFT JOIN prod ON ((prod.gcf_id = s.gcf_id)))
      LEFT JOIN tax_dom td ON ((td.gcf_id = s.gcf_id)))
      LEFT JOIN cat_share cs ON ((cs.gcf_id = s.gcf_id)))
+     LEFT JOIN type_share ts ON ((ts.gcf_id = s.gcf_id)))
   WITH NO DATA;
 
 
@@ -2440,7 +2459,42 @@ CREATE MATERIALIZED VIEW public.gcf_distributions_mv AS
 -- Name: MATERIALIZED VIEW gcf_distributions_mv; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON MATERIALIZED VIEW public.gcf_distributions_mv IS 'Per-GCF distributions as JSONB: GOLD ecosystem per level (level 1 with a synthetic ''Host-assoc.: Plants'' bucket, 0086), dominant ecosystem and phylum (0112), and product categories as shares of MEMBERS (0119): product_category_distribution is the exact-combination partition, category_member_share the overlapping per-category share, majority_categories those at >= 50%.';
+COMMENT ON MATERIALIZED VIEW public.gcf_distributions_mv IS 'Per-GCF distributions. GOLD ecosystem per level as % of RESOLVED members, each primary member counted once with its first-ranked sample (0156), level 1 with a synthetic ''Host-assoc.: Plants'' bucket (0086); dominant ecosystem per level and resolved_pct_l* = % of members with an ecosystem at that level (0156); dominant phylum (0112); product categories (0119) and product types (0156) as shares of MEMBERS, with >= 10/50/90% threshold arrays.';
+
+
+--
+-- Name: COLUMN gcf_distributions_mv.max_pct_l3; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.gcf_distributions_mv.max_pct_l3 IS 'Share of the dominant L3 ecosystem among members WITH an L3 ecosystem (1 dp); read with resolved_pct_l3. Same meaning at every level l1..l5.';
+
+
+--
+-- Name: COLUMN gcf_distributions_mv.resolved_pct_l3; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.gcf_distributions_mv.resolved_pct_l3 IS '% of primary members with an L3 GOLD ecosystem (2 dp): the denominator of every L3 ecosystem share. Same meaning at every level l1..l5.';
+
+
+--
+-- Name: COLUMN gcf_distributions_mv.eco_l3_ge50; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.gcf_distributions_mv.eco_l3_ge50 IS 'L3 ecosystems holding >= 50% of the members with an L3 ecosystem (from the 2-dp share). Likewise eco_l<n>_ge10/_ge50/_ge90 for every level.';
+
+
+--
+-- Name: COLUMN gcf_distributions_mv.product_type_member_share; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.gcf_distributions_mv.product_type_member_share IS '{antiSMASH product: % of primary members carrying it}, 2 dp. Overlapping, need not sum to 100. Migration 0156.';
+
+
+--
+-- Name: COLUMN gcf_distributions_mv.product_types_ge50; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.gcf_distributions_mv.product_types_ge50 IS 'Products carried by >= 50% of members (from the 2-dp share). Likewise _ge10/_ge90.';
 
 
 --
@@ -2551,6 +2605,106 @@ COMMENT ON COLUMN public.gcf_export_jobs.expires_at IS 'Timestamp when the expor
 --
 
 COMMENT ON COLUMN public.gcf_export_jobs.is_deleted IS 'Whether the export file has been deleted from disk';
+
+
+--
+-- Name: gcf_gold_ecosystem_distribution_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.gcf_gold_ecosystem_distribution_mv AS
+ WITH gcf_gold_paths AS (
+         SELECT bg.gcf_id,
+            split_part(ss.gold_ecosystem_path, ':'::text, 1) AS gold_level_1,
+            split_part(ss.gold_ecosystem_path, ':'::text, 2) AS gold_level_2,
+            split_part(ss.gold_ecosystem_path, ':'::text, 3) AS gold_level_3,
+            split_part(ss.gold_ecosystem_path, ':'::text, 4) AS gold_level_4,
+            split_part(ss.gold_ecosystem_path, ':'::text, 5) AS gold_level_5,
+            b.id AS bgc_id
+           FROM ((((public.bgcs b
+             JOIN public.bgc_gcf bg ON (((bg.bgc_id = b.id) AND bg.is_primary)))
+             JOIN public.assemblies a ON ((b.assembly = a.id)))
+             JOIN public.sample_assemblies sa ON ((sa.assembly_id = a.id)))
+             JOIN public.sample_summary ss ON ((ss.id = sa.sample_id)))
+          WHERE ((ss.gold_ecosystem_path IS NOT NULL) AND (ss.gold_ecosystem_path <> ''::text))
+        ), level_1_counts AS (
+         SELECT gcf_gold_paths.gcf_id,
+            1 AS level,
+            gcf_gold_paths.gold_level_1 AS ecosystem,
+            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
+           FROM gcf_gold_paths
+          WHERE ((gcf_gold_paths.gold_level_1 IS NOT NULL) AND (gcf_gold_paths.gold_level_1 <> ''::text))
+          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_1
+        ), level_2_counts AS (
+         SELECT gcf_gold_paths.gcf_id,
+            2 AS level,
+            gcf_gold_paths.gold_level_2 AS ecosystem,
+            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
+           FROM gcf_gold_paths
+          WHERE ((gcf_gold_paths.gold_level_2 IS NOT NULL) AND (gcf_gold_paths.gold_level_2 <> ''::text))
+          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_2
+        ), level_3_counts AS (
+         SELECT gcf_gold_paths.gcf_id,
+            3 AS level,
+            gcf_gold_paths.gold_level_3 AS ecosystem,
+            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
+           FROM gcf_gold_paths
+          WHERE ((gcf_gold_paths.gold_level_3 IS NOT NULL) AND (gcf_gold_paths.gold_level_3 <> ''::text))
+          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_3
+        ), level_4_counts AS (
+         SELECT gcf_gold_paths.gcf_id,
+            4 AS level,
+            gcf_gold_paths.gold_level_4 AS ecosystem,
+            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
+           FROM gcf_gold_paths
+          WHERE ((gcf_gold_paths.gold_level_4 IS NOT NULL) AND (gcf_gold_paths.gold_level_4 <> ''::text))
+          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_4
+        ), level_5_counts AS (
+         SELECT gcf_gold_paths.gcf_id,
+            5 AS level,
+            gcf_gold_paths.gold_level_5 AS ecosystem,
+            count(DISTINCT gcf_gold_paths.bgc_id) AS bgc_count
+           FROM gcf_gold_paths
+          WHERE ((gcf_gold_paths.gold_level_5 IS NOT NULL) AND (gcf_gold_paths.gold_level_5 <> ''::text))
+          GROUP BY gcf_gold_paths.gcf_id, gcf_gold_paths.gold_level_5
+        ), all_counts AS (
+         SELECT level_1_counts.gcf_id,
+            level_1_counts.level,
+            level_1_counts.ecosystem,
+            level_1_counts.bgc_count
+           FROM level_1_counts
+        UNION ALL
+         SELECT level_2_counts.gcf_id,
+            level_2_counts.level,
+            level_2_counts.ecosystem,
+            level_2_counts.bgc_count
+           FROM level_2_counts
+        UNION ALL
+         SELECT level_3_counts.gcf_id,
+            level_3_counts.level,
+            level_3_counts.ecosystem,
+            level_3_counts.bgc_count
+           FROM level_3_counts
+        UNION ALL
+         SELECT level_4_counts.gcf_id,
+            level_4_counts.level,
+            level_4_counts.ecosystem,
+            level_4_counts.bgc_count
+           FROM level_4_counts
+        UNION ALL
+         SELECT level_5_counts.gcf_id,
+            level_5_counts.level,
+            level_5_counts.ecosystem,
+            level_5_counts.bgc_count
+           FROM level_5_counts
+        )
+ SELECT gcf_id,
+    level,
+    ecosystem,
+    bgc_count,
+    sum(bgc_count) OVER (PARTITION BY gcf_id, level) AS total_bgcs_at_level,
+    round((((bgc_count)::numeric / NULLIF(sum(bgc_count) OVER (PARTITION BY gcf_id, level), (0)::numeric)) * (100)::numeric), 1) AS percentage
+   FROM all_counts
+  WITH NO DATA;
 
 
 --
@@ -2800,6 +2954,24 @@ CREATE VIEW public.gcf_summary AS
      LEFT JOIN public.bgc_gcf bg ON (((bg.gcf_id = g.id) AND bg.is_primary)))
      LEFT JOIN public.bgcs b ON ((b.id = bg.bgc_id)))
   GROUP BY g.id, g.name, g.cluster_method, g.family_class, g.listed;
+
+
+--
+-- Name: gcf_taxonomy_counts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.gcf_taxonomy_counts (
+    gcf_id uuid CONSTRAINT gcf_taxonomy_counts_new_gcf_id_not_null NOT NULL,
+    taxonomy_id uuid,
+    bgc_count integer CONSTRAINT gcf_taxonomy_counts_new_bgc_count_not_null NOT NULL
+);
+
+
+--
+-- Name: TABLE gcf_taxonomy_counts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.gcf_taxonomy_counts IS 'Primary members per (family, taxonomy_id); NULL taxonomy_id = unclassified. Built by scripts/clustering-v3/build_gcf_taxonomy_counts.sql. Migration 0150.';
 
 
 --
@@ -3483,6 +3655,100 @@ COMMENT ON TABLE public.study_gcf IS 'One row per (logical study, GCF). Precompu
 
 
 --
+-- Name: study_geo_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.study_geo_mv AS
+ WITH logical_study AS (
+         SELECT st.id AS study_id,
+            COALESCE(NULLIF(st.study_name, ''::text), st.accession, (st.id)::text) AS study_key
+           FROM public.studies st
+        ), members AS (
+         SELECT ls.study_key,
+            pk.parent_key,
+            sm.id AS sample_id,
+            sm.latitude,
+            sm.longitude,
+            sm.location_resolution,
+            ssum.primary_biome
+           FROM ((((logical_study ls
+             JOIN public.study_samples sts ON ((sts.study_id = ls.study_id)))
+             JOIN public.samples sm ON ((sm.id = sts.sample_id)))
+             JOIN public.sample_parent_key pk ON ((pk.sample_id = sm.id)))
+             LEFT JOIN public.sample_summary ssum ON ((ssum.id = sm.id)))
+        ), geo AS (
+         SELECT members.study_key,
+            (count(DISTINCT members.parent_key))::integer AS total,
+            (count(DISTINCT members.sample_id))::integer AS unit_count,
+            (count(DISTINCT members.parent_key) FILTER (WHERE ((members.latitude IS NOT NULL) AND (members.longitude IS NOT NULL))))::integer AS geo_tagged,
+            (min(members.latitude) FILTER (WHERE (members.location_resolution IS DISTINCT FROM 'unreliable'::text)))::double precision AS south,
+            (max(members.latitude) FILTER (WHERE (members.location_resolution IS DISTINCT FROM 'unreliable'::text)))::double precision AS north,
+            (min(members.longitude) FILTER (WHERE (members.location_resolution IS DISTINCT FROM 'unreliable'::text)))::double precision AS west,
+            (max(members.longitude) FILTER (WHERE (members.location_resolution IS DISTINCT FROM 'unreliable'::text)))::double precision AS east
+           FROM members
+          GROUP BY members.study_key
+        ), biome_counts AS (
+         SELECT members.study_key,
+            members.primary_biome AS biome,
+            (count(DISTINCT members.parent_key))::integer AS count
+           FROM members
+          GROUP BY members.study_key, members.primary_biome
+        ), env AS (
+         SELECT ranked.study_key,
+            jsonb_agg(jsonb_build_object('biome', ranked.biome, 'count', ranked.count) ORDER BY ranked.count DESC, ranked.biome) FILTER (WHERE (ranked.rank <= 12)) AS environment
+           FROM ( SELECT biome_counts.study_key,
+                    biome_counts.biome,
+                    biome_counts.count,
+                    row_number() OVER (PARTITION BY biome_counts.study_key ORDER BY biome_counts.count DESC, biome_counts.biome) AS rank
+                   FROM biome_counts) ranked
+          GROUP BY ranked.study_key
+        )
+ SELECT g.study_key,
+    g.total,
+    g.unit_count,
+    g.geo_tagged,
+    g.south,
+    g.north,
+    g.west,
+    g.east,
+    COALESCE(e.environment, '[]'::jsonb) AS environment
+   FROM (geo g
+     LEFT JOIN env e USING (study_key))
+  WITH NO DATA;
+
+
+--
+-- Name: study_map_points_mv; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.study_map_points_mv AS
+ WITH logical_study AS (
+         SELECT st.id AS study_id,
+            COALESCE(NULLIF(st.study_name, ''::text), st.accession, (st.id)::text) AS study_key
+           FROM public.studies st
+        )
+ SELECT DISTINCT ON (ls.study_key, pk.parent_key) ls.study_key,
+    pk.parent_key,
+    (sm.id)::text AS id,
+    sm.external_id,
+    sm.name,
+    (sm.latitude)::double precision AS latitude,
+    (sm.longitude)::double precision AS longitude,
+    ssum.primary_biome,
+    ssum.gold_ecosystem_path,
+    ssum.bgc_count,
+    COALESCE(ssum.source_types, ARRAY[]::text[]) AS source_types
+   FROM ((((logical_study ls
+     JOIN public.study_samples sts ON ((sts.study_id = ls.study_id)))
+     JOIN public.samples sm ON ((sm.id = sts.sample_id)))
+     JOIN public.sample_parent_key pk ON ((pk.sample_id = sm.id)))
+     LEFT JOIN public.sample_summary ssum ON ((ssum.id = sm.id)))
+  WHERE ((sm.latitude IS NOT NULL) AND (sm.longitude IS NOT NULL) AND (sm.location_resolution IS DISTINCT FROM 'unreliable'::text))
+  ORDER BY ls.study_key, pk.parent_key, ssum.bgc_count DESC NULLS LAST
+  WITH NO DATA;
+
+
+--
 -- Name: taxonomies; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3744,6 +4010,20 @@ GRANT SELECT ON TABLE public.assembly_analyses TO bgc_app;
 
 
 --
+-- Name: TABLE bgcs; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.bgcs TO bgc_app;
+
+
+--
+-- Name: TABLE assembly_bgc_counts_mv; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.assembly_bgc_counts_mv TO bgc_app;
+
+
+--
 -- Name: TABLE sample_assemblies; Type: ACL; Schema: public; Owner: -
 --
 
@@ -3769,13 +4049,6 @@ GRANT SELECT ON TABLE public.assembly_samples_mv TO bgc_app;
 --
 
 GRANT SELECT ON TABLE public.assembly_taxonomy TO bgc_app;
-
-
---
--- Name: TABLE bgcs; Type: ACL; Schema: public; Owner: -
---
-
-GRANT SELECT ON TABLE public.bgcs TO bgc_app;
 
 
 --
@@ -4031,10 +4304,10 @@ GRANT SELECT ON TABLE public.gcf_category_combination_mv TO bgc_app;
 
 
 --
--- Name: TABLE gcf_gold_ecosystem_distribution_mv; Type: ACL; Schema: public; Owner: -
+-- Name: TABLE gcf_member_ecosystem_mv; Type: ACL; Schema: public; Owner: -
 --
 
-GRANT SELECT ON TABLE public.gcf_gold_ecosystem_distribution_mv TO bgc_app;
+GRANT SELECT ON TABLE public.gcf_member_ecosystem_mv TO bgc_app;
 
 
 --
@@ -4042,6 +4315,13 @@ GRANT SELECT ON TABLE public.gcf_gold_ecosystem_distribution_mv TO bgc_app;
 --
 
 GRANT SELECT ON TABLE public.gcf_product_category_distribution_mv TO bgc_app;
+
+
+--
+-- Name: TABLE gcf_product_type_member_mv; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.gcf_product_type_member_mv TO bgc_app;
 
 
 --
@@ -4084,6 +4364,13 @@ GRANT SELECT ON TABLE public.gcf_environmental_distribution_mv TO bgc_app;
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.gcf_export_jobs TO bgc_app;
+
+
+--
+-- Name: TABLE gcf_gold_ecosystem_distribution_mv; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.gcf_gold_ecosystem_distribution_mv TO bgc_app;
 
 
 --
@@ -4154,6 +4441,13 @@ GRANT SELECT ON TABLE public.gcf_successor TO bgc_app;
 --
 
 GRANT SELECT ON TABLE public.gcf_summary TO bgc_app;
+
+
+--
+-- Name: TABLE gcf_taxonomy_counts; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.gcf_taxonomy_counts TO bgc_app;
 
 
 --
@@ -4311,6 +4605,20 @@ GRANT SELECT ON TABLE public.study_gcf TO bgc_app;
 
 
 --
+-- Name: TABLE study_geo_mv; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.study_geo_mv TO bgc_app;
+
+
+--
+-- Name: TABLE study_map_points_mv; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT SELECT ON TABLE public.study_map_points_mv TO bgc_app;
+
+
+--
 -- Name: TABLE taxonomies; Type: ACL; Schema: public; Owner: -
 --
 
@@ -4342,5 +4650,5 @@ GRANT SELECT ON TABLE public.user_uploads TO bgc_app;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict vjxT04EF3afXjUNrSLQDxvFDg5Qe76TtQxUa9ziSPzbXomRtaCEKPtrgGbdhpai
+\unrestrict VJhdtnLN3VebZAgRBVvJMI87tHSVKzjHusmOyndbGT1eU3uD4ZvQ3D74KcvepPF
 

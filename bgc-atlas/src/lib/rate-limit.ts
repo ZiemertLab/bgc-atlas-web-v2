@@ -27,47 +27,60 @@ const redis = new IORedisAdapter(redisClient);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const redisAsUpstash = redis as any;
 
+// Every limiter is a token bucket: `size` requests at once, then one more every
+// `everyMinutes`, which spreads the old per-period count over the same period. A bucket's
+// reset is its next refill, so the Retry-After and "please wait N minutes" built from it
+// are true; a sliding window's reset is the end of its clock window, which misstated the
+// wait both ways. Prefixes end in -bucket: a bucket is a hash where a window kept a
+// string, and the bucket script fails on a key of the other type.
+const BUCKETS = {
+  search: { size: 10, everyMinutes: 6 },       // 10 an hour
+  searchAttempt: { size: 60, everyMinutes: 1 },// 60 an hour
+  export: { size: 20, everyMinutes: 3 },       // 20 an hour
+  contribute: { size: 5, everyMinutes: 12 },   // 5 an hour
+  feedback: { size: 5, everyMinutes: 12 },     // 5 an hour
+  viewer: { size: 60, everyMinutes: 1 },       // 60 at once, then 1 a minute
+} as const;
+type BucketName = keyof typeof BUCKETS;
+
+function bucketLimiter(name: BucketName, prefix: string) {
+  const { size, everyMinutes } = BUCKETS[name];
+  return new Ratelimit({
+    redis: redisAsUpstash,
+    limiter: Ratelimit.tokenBucket(1, `${everyMinutes} m`, size),
+    analytics: false,
+    prefix,
+  });
+}
+
+/** "10 searches at once, then 1 every 6 minutes" -- the 429 wording. */
+export function bucketLimitText(name: BucketName, noun: string): string {
+  const { size, everyMinutes } = BUCKETS[name];
+  return `${size} ${noun} at once, then 1 every ${everyMinutes === 1 ? 'minute' : `${everyMinutes} minutes`}`;
+}
+
 // Shared by sequence and BiG-SLiCE submissions. Counts searches that were queued, not
 // requests: the routes charge a slot up front, so an exhausted client gets its 429
 // before a 500 MB upload is read, and refund it when no job is queued.
-export const searchRateLimit = new Ratelimit({
-  redis: redisAsUpstash,
-  limiter: Ratelimit.slidingWindow(10, '1 h'),
-  analytics: false,
-  prefix: 'ratelimit:search',
-});
+export const searchRateLimit = bucketLimiter('search', 'ratelimit:search-bucket');
 
 // Every submit request, accepted or not: the backstop the refunds need. middleware.ts
 // exempts /api/search/ from the general limiter, and a rejected BiG-SLiCE upload has
 // already been written to disk before its LOCUS check fails.
-export const searchAttemptRateLimit = new Ratelimit({
-  redis: redisAsUpstash,
-  limiter: Ratelimit.slidingWindow(60, '1 h'),
-  analytics: false,
-  prefix: 'ratelimit:search-attempt',
-});
+export const searchAttemptRateLimit = bucketLimiter('searchAttempt', 'ratelimit:search-attempt-bucket');
 
-export const exportRateLimit = new Ratelimit({
-  redis: redisAsUpstash,
-  limiter: Ratelimit.slidingWindow(20, '1 h'),
-  analytics: false,
-  prefix: 'ratelimit:export',
-});
+export const exportRateLimit = bucketLimiter('export', 'ratelimit:export-bucket');
 
 // /api/contribute accepts up to 500 MB uploads (nginx client_max_body_size) written to CephFS.
-export const contributeRateLimit = new Ratelimit({
-  redis: redisAsUpstash,
-  limiter: Ratelimit.slidingWindow(5, '1 h'),
-  analytics: false,
-  prefix: 'ratelimit:contribute',
-});
+export const contributeRateLimit = bucketLimiter('contribute', 'ratelimit:contribute-bucket');
 
-export const feedbackRateLimit = new Ratelimit({
-  redis: redisAsUpstash,
-  limiter: Ratelimit.slidingWindow(5, '1 h'),
-  analytics: false,
-  prefix: 'ratelimit:feedback',
-});
+// antiSMASH viewer work: unpacking a run's archive or trimming a region out of its results
+// JSON. Charged only by a request that would start such work (a cached region, a run already
+// on disk, a poll or a static file costs nothing), so ordinary browsing never meets it; it
+// stops one address walking BGC ids to keep the box-wide extraction line full.
+export const viewerRateLimit = bucketLimiter('viewer', 'ratelimit:viewer-bucket');
+
+export const feedbackRateLimit = bucketLimiter('feedback', 'ratelimit:feedback-bucket');
 
 // /api/bgcs is exempt from the general limiter, so GET /api/bgcs/[id]/download carries this.
 // Token bucket rather than a 1 h slidingWindow, whose reset (end of the clock hour) would

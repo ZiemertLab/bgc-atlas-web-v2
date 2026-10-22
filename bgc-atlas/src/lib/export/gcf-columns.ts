@@ -2,6 +2,13 @@
 import type { GcfListItem } from '@/lib/hooks/use-gcfs';
 import type { ExportColumn } from '@/lib/export/format';
 import { formatBgcLength } from '@/lib/utils/bgc-length';
+import {
+  formatMemberShares,
+  shareConditionLabel,
+  shareConditionsOf,
+  shareMatchFor,
+} from '@/lib/gcf/share-display';
+import type { FilterGroup } from '@/lib/filters/types';
 
 const RANKS = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species'] as const;
 const ECOSYSTEM_LEVELS = [1, 2, 3, 4, 5] as const;
@@ -57,13 +64,35 @@ export const GCF_TABLE_EXPORT_COLUMNS: ExportColumn<GcfListItem>[] = [
     label: 'Product distribution (% of product assignments)',
     value: (g) => formatShares(g.productTypeDistribution),
   },
-  ...ECOSYSTEM_LEVELS.map((level) => ({
-    id: `biomeDistribution_l${level}`,
-    label: `GOLD Ecosystem (L${level})`,
-    // Verbatim keys, as BiomeDistributionChart draws them: formatBiomeLabel would
-    // merge 'Host-associated' with the synthetic 'Host-assoc.: Plants' bucket.
-    value: (g: GcfListItem) => formatShares(g.biomeDistributionByLevel?.[level], { top: TOP_SHARES }),
-  })),
+  {
+    // What the Product filter thresholds: each product's share of MEMBERS, at
+    // the stored 2 dp and with nothing dropped, so the one lanthipeptide member
+    // in 12,278 exports as 0.01 % rather than vanishing. Overlapping: a member
+    // with two products counts for both. Blank where the index has no shares.
+    id: 'productTypeMemberShare',
+    label: 'Product types (% of members)',
+    value: (g) => formatMemberShares(g.productTypeMemberShare),
+  },
+  ...ECOSYSTEM_LEVELS.flatMap((level) => [
+    {
+      id: `biomeDistribution_l${level}`,
+      // The denominator is the members WITH a level-n ecosystem, never all
+      // members; the next column says how many that is.
+      label: `GOLD Ecosystem (L${level}, % of members with an L${level} ecosystem)`,
+      // Verbatim keys, as BiomeDistributionChart draws them: formatBiomeLabel would
+      // merge 'Host-associated' with the synthetic 'Host-assoc.: Plants' bucket.
+      value: (g: GcfListItem) => formatShares(g.biomeDistributionByLevel?.[level], { top: TOP_SHARES }),
+    },
+    {
+      id: `ecosystemResolved_l${level}`,
+      label: `Members with an L${level} ecosystem (%)`,
+      // As stored (2 dp). Blank where unknown -- not 0, which would claim none.
+      value: (g: GcfListItem) => {
+        const pct = g.ecosystemResolvedPctByLevel?.[level];
+        return pct === null || pct === undefined ? '' : String(pct);
+      },
+    },
+  ]),
   ...RANKS.map((rank) => ({
     id: `taxonomy_${rank}`,
     label: `Taxonomy (${rank})`,
@@ -97,3 +126,29 @@ export const GCF_TABLE_EXPORT_COLUMNS: ExportColumn<GcfListItem>[] = [
     value: (g) => (g.avgDistance === null ? '' : g.avgDistance.toFixed(3)),
   },
 ];
+
+/**
+ * The /gcfs export columns for the applied advanced filters: the table's set,
+ * plus one "Matched: <condition>" column per share condition after Member BGCs,
+ * as the table auto-shows them. A file has no column budget, so it never folds
+ * them into one. The page export and the all-matching route both call this, so
+ * the two files keep one column set.
+ *
+ * File convention, as formatShares: "34.6%" without the space, and a fixed
+ * locale, since the server writes the all-matching file.
+ */
+export function gcfTableExportColumns(filters: FilterGroup | null | undefined): ExportColumn<GcfListItem>[] {
+  const conditions = shareConditionsOf(filters);
+  if (!conditions.length) return GCF_TABLE_EXPORT_COLUMNS;
+  const matched: ExportColumn<GcfListItem>[] = conditions.map(({ columnId, query }) => ({
+    id: columnId,
+    label: `Matched: ${shareConditionLabel(query)}`,
+    value: (g: GcfListItem) => {
+      const match = shareMatchFor(g, query, 'en-US');
+      if (match.status !== 'matched') return '';
+      return `${match.entries.map((e) => `${e.value}: ${e.text}%`).join('; ')} ${match.denominator}`;
+    },
+  }));
+  const at = GCF_TABLE_EXPORT_COLUMNS.findIndex((c) => c.id === 'memberCount') + 1;
+  return [...GCF_TABLE_EXPORT_COLUMNS.slice(0, at), ...matched, ...GCF_TABLE_EXPORT_COLUMNS.slice(at)];
+}

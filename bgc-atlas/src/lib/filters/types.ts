@@ -1,3 +1,8 @@
+import { migrateLegacyFilterGroup } from '@/lib/filters/legacy-conditions';
+import {
+  conditionThreshold, formatShareThreshold, isShareField, shareSpecForField,
+} from '@/lib/filters/share-fields';
+
 export type FilterFieldType = 'text' | 'number' | 'select';
 
 export type TextOperator = 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'starts_with' | 'ends_with';
@@ -31,6 +36,11 @@ export interface FilterFieldDefinition {
   queryField?: string;
   /** Colon-delimited path field; `in`/`not_in` match the selected node and its subtree. */
   hierarchical?: boolean;
+  /** A share field (lib/filters/share-fields.ts): the condition carries a
+   *  `threshold`, picked from these, beside its value. */
+  share?: { thresholds: readonly number[]; defaultThreshold: number };
+  /** facet-values key for the value picker, when it is not the field id. */
+  vocabField?: string;
 }
 
 export interface FilterCondition {
@@ -38,9 +48,16 @@ export interface FilterCondition {
   field: string;
   operator: FilterOperator;
   value: FilterValue;
+  /** Share fields only: the share of members (percent) the value must reach,
+   *  0 meaning "any member". See lib/filters/share-fields.ts. */
+  threshold?: number;
 }
 
-export type UnhonouredReason = 'unknown_field' | 'unsupported_operator' | 'unusable_value';
+export type UnhonouredReason =
+  | 'unknown_field' | 'unsupported_operator' | 'unsupported_threshold' | 'unusable_value'
+  // The browse index lacks a field this condition needs and the request cannot fall back to
+  // SQL (?study=). Transient.
+  | 'not_indexed';
 
 /**
  * A condition an adapter could not honour. Shared by the OpenSearch and SQL builders:
@@ -53,6 +70,9 @@ export interface UnhonouredCondition {
   /** The value as sent, echoed back so a stale saved filter can be repaired. */
   value?: FilterValue;
   supportedOperators?: FilterOperator[];
+  /** unsupported_threshold only: the threshold as sent, and the ones offered. */
+  threshold?: number;
+  supportedThresholds?: number[];
 }
 
 export type UnhonouredSink = (unhonoured: UnhonouredCondition) => void;
@@ -98,32 +118,78 @@ export const createFilterCondition = (
 
 export const createDefaultCondition = (
   field?: FilterFieldDefinition
-): FilterCondition => createFilterCondition(
-  field?.id ?? '',
-  field?.defaultOperator ?? 'equals',
-  ''
-);
+): FilterCondition => ({
+  ...createFilterCondition(
+    field?.id ?? '',
+    field?.defaultOperator ?? 'equals',
+    ''
+  ),
+  ...(field?.share && { threshold: field.share.defaultThreshold }),
+});
 
+/**
+ * Base64 of the UTF-8 bytes of `value`.
+ *
+ * It was btoa(value), which takes only characters up to U+00FF and THROWS on
+ * anything above -- an "alpha", a ">=" sign, an en dash pasted into a filter.
+ * serializeFilterGroup caught that and returned '', so the request went out with
+ * no advanced filter at all: the whole corpus at HTTP 200, with the filter still on
+ * screen. For an ASCII payload the bytes, and so the output, are identical to
+ * btoa's, so existing links and cache keys do not change.
+ */
 export const encodeBase64 = (value: string) => {
-  const scope = globalThis as typeof globalThis & { btoa?: (data: string) => string };
-  if (typeof scope.btoa === 'function') {
-    return scope.btoa(value);
-  }
-  return Buffer.from(value, 'utf-8').toString('base64');
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 };
 
+/**
+ * The inverse of encodeBase64, and of the btoa it replaced.
+ *
+ * Links written before the switch encoded each character below U+0100 as ONE byte
+ * (Latin-1), so a degree sign or a "mu" in an old link is not valid UTF-8. Those
+ * bytes are read back as Latin-1, which is what they were. Only an old payload
+ * that is ALSO valid UTF-8 would be misread: that needs a character in
+ * U+00C2-U+00F4 directly followed by one in U+0080-U+00BF ("Ã©"), which no filter
+ * value has.
+ */
 export const decodeBase64 = (value: string) => {
-  const scope = globalThis as typeof globalThis & { atob?: (data: string) => string };
-  if (typeof scope.atob === 'function') {
-    return scope.atob(value);
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return binary;
   }
-  return Buffer.from(value, 'base64').toString('utf-8');
 };
 
+/**
+ * The base64 text of a URL parameter value, as read back by searchParams.get().
+ *
+ * The serializers used to return encodeURIComponent(base64), and every caller
+ * then set that through URLSearchParams, which encoded it again: a payload
+ * ending in "=" reached the address bar as "%253D", and a link written before
+ * the fix reads back as "...%3D". One or two `%XX` layers are peeled here so
+ * both the canonical form and those links parse. Base64 has no "%", so peeling
+ * never touches a canonical value; a space can only be a "+" that a hand-built
+ * link left unescaped (URLSearchParams reads "+" as a space).
+ */
+export const decodeUrlBase64Param = (value: string): string => {
+  let v = value.trim();
+  for (let i = 0; i < 2 && /%[0-9A-Fa-f]{2}/.test(v); i += 1) v = decodeURIComponent(v);
+  return v.replace(/ /g, '+');
+};
+
+/**
+ * The filter group as RAW base64: a URL parameter VALUE, not a query fragment.
+ * Put it in a URL through URLSearchParams / searchParams.set (or
+ * encodeURIComponent), which encode it exactly once.
+ */
 export const serializeFilterGroup = (group: FilterGroup | null) => {
   if (!group) return '';
   try {
-    return encodeURIComponent(encodeBase64(JSON.stringify(group)));
+    return encodeBase64(JSON.stringify(group));
   } catch {
     return '';
   }
@@ -132,9 +198,13 @@ export const serializeFilterGroup = (group: FilterGroup | null) => {
 export const deserializeFilterGroup = (encoded: string | null): FilterGroup | null => {
   if (!encoded) return null;
   try {
-    const json = decodeBase64(decodeURIComponent(encoded));
+    const json = decodeBase64(decodeUrlBase64Param(encoded));
     const parsed = JSON.parse(json) as FilterGroup;
-    return isFilterGroupShape(parsed) ? parsed : null;
+    // Old links keep their meaning: a retired field is rewritten into its
+    // successor here, where every page and every route reads a link, so the
+    // first write of a URL mirror stores the new form and later reads are a
+    // no-op. See legacy-conditions.ts.
+    return isFilterGroupShape(parsed) ? migrateLegacyFilterGroup(parsed) : null;
   } catch {
     return null;
   }
@@ -188,6 +258,13 @@ const OPERATOR_SUMMARY: Record<FilterOperator, string> = {
 
 const summarizeCondition = (label: string, condition: FilterCondition): string => {
   const { operator, value } = condition;
+
+  const share = shareSpecForField(condition.field);
+  if (share) {
+    const rendered = Array.isArray(value) ? value.join(', ') : `${value ?? ''}`;
+    const symbol = OPERATOR_SUMMARY[operator] ?? String(operator).replace(/_/g, ' ');
+    return `${label} ${symbol} ${rendered} (${formatShareThreshold(share, conditionThreshold(condition))})`.trim();
+  }
 
   if (operator === 'between') {
     const [rawMin, rawMax] = Array.isArray(value) ? value : [value, ''];
@@ -318,7 +395,7 @@ export const hasFilterRules = (group?: FilterGroup | null): group is FilterGroup
 // server ignores, so identical filters from different sessions share a key.
 export type CanonicalFilterGroup = {
   operator: 'AND' | 'OR';
-  conditions: Array<{ field: string; operator: string; value: FilterValue }>;
+  conditions: Array<{ field: string; operator: string; value: FilterValue; threshold?: number }>;
   groups: CanonicalFilterGroup[];
 };
 
@@ -332,11 +409,18 @@ export const canonicalizeFilterGroup = (
   const walk = (node: FilterGroup): CanonicalFilterGroup => ({
     // buildAdvancedWhere runs anything but 'OR' as AND; a junk operator must not mint its own key.
     operator: node.operator === 'OR' ? 'OR' : 'AND',
-    conditions: (node.conditions ?? []).map((condition) => ({
-      field: condition.field,
-      operator: condition.operator,
-      value: condition.value,
-    })),
+    conditions: (node.conditions ?? []).map((condition) => {
+      // Share fields only, and as a number: on any other field the server never
+      // reads it, so it must not split a key; "50" and 50 ask the same question.
+      const threshold = isShareField(condition.field) && condition.threshold != null
+        ? Number(condition.threshold) : undefined;
+      return {
+        field: condition.field,
+        operator: condition.operator,
+        value: condition.value,
+        ...(threshold !== undefined && Number.isFinite(threshold) && { threshold }),
+      };
+    }),
     groups: (node.groups ?? []).map(walk),
   });
 

@@ -23,13 +23,16 @@ import { SampleGcfCount, SAMPLE_GCF_HEADER_TOOLTIP } from '@/components/ui/sampl
 import { ApiError } from '@/lib/api-client';
 import { useStudy } from '@/lib/hooks/use-studies';
 import { useGcfs, type GcfListItem } from '@/lib/hooks/use-gcfs';
+import type { TaxonomyRank } from '@/lib/types';
 import { useSamples } from '@/lib/hooks/use-samples';
 import { useStudyBgcCounts } from '@/lib/hooks/use-study-gcfs';
-import { studySamplesHref } from '@/lib/utils/sample-link';
+import { isGenomeSourceType, studySamplesHref } from '@/lib/utils/sample-link';
+import type { AreaLinks } from '@/components/ui/sample-map-dots.client';
 import type { Sample } from '@/lib/types';
-import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey } from '@/lib/utils/accession';
+import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey, studyTitle } from '@/lib/utils/accession';
 import { formatGOLDBreadcrumb, getGOLDBadgeClass, getGOLDColorHex } from '@/lib/utils/gold-parser';
 import { BiomeDistributionChart } from '@/components/ui/biome-distribution-chart';
+import { ecosystemColumnTooltip, ecosystemResolvedNote, ecosystemValueLabel } from '@/lib/gcf/share-display';
 import { ProductCategoryChart } from '@/components/ui/product-category-chart';
 import { TaxonomyDistributionChart } from '@/components/ui/taxonomy-distribution-chart';
 import { InfoTooltip } from '@/components/ui/info-tooltip';
@@ -238,6 +241,19 @@ export default function StudyDetailPage() {
     gcfRows.map((g) => g.id)
   );
 
+  // The map's area select keeps the study: "View samples" opens this study's samples
+  // in the box, on /genome-collections when most selected points are genomes and
+  // /samples otherwise. No "View BGCs" -- /bgcs cannot filter by study.
+  const studyKey = detail?.study.study_key;
+  const mapAreaLinks = useMemo<AreaLinks>(() => ({
+    samples: (box, inBox) => {
+      const genomes = inBox.filter((s) =>
+        s.sourceTypes.some(isGenomeSourceType) && !s.sourceTypes.includes('metagenome')).length;
+      const href = studySamplesHref(studyKey ?? '', genomes > inBox.length - genomes ? 'genome' : 'metagenome');
+      return `${href}&${box}`;
+    },
+  }), [studyKey]);
+
   const mapSamples = useMemo(
     () =>
       (detail?.geography.points ?? []).map((p) => ({
@@ -254,7 +270,7 @@ export default function StudyDetailPage() {
         hostScientificName: null,
         dataSourceNames: [] as string[],
         studyTitles: detail?.study.title ? [detail.study.title] : [],
-        sourceTypes: [] as string[],
+        sourceTypes: p.source_types ?? [],
         assemblyCount: 0,
         bgcCount: p.bgc_count ?? 0,
       })),
@@ -345,13 +361,16 @@ export default function StudyDetailPage() {
           const byRank = { ...(g.taxonomyDistributionByRank ?? {}) } as Record<string, Record<string, number>>;
           // Same fallback as /gcfs: domain comes from taxonomyDistribution when the
           // per-rank map has none.
-          if (!byRank.domain?.length && Object.keys(g.taxonomyDistribution ?? {}).length) {
+          let taxaCount = g.taxonomyTaxaCountByRank?.[taxonomyRank as TaxonomyRank];
+          if (Object.keys(byRank.domain ?? {}).length === 0 && Object.keys(g.taxonomyDistribution ?? {}).length) {
             byRank.domain = g.taxonomyDistribution;
+            // The fallback is a full map, so the trimmed-map count doesn't apply.
+            if (taxonomyRank === 'domain') taxaCount = undefined;
           }
           const dist = byRank[taxonomyRank];
           return dist && Object.keys(dist).length ? (
             <div className="w-full px-1">
-              <TaxonomyDistributionChart distribution={dist} height={24} />
+              <TaxonomyDistributionChart distribution={dist} taxaCount={taxaCount} height={24} />
             </div>
           ) : (
             <span className="text-xs text-muted-foreground">No data</span>
@@ -374,12 +393,17 @@ export default function StudyDetailPage() {
             </SelectContent>
           </Select>
         ),
-        headerTooltip: `Distribution of BGCs across GOLD ecosystem level ${ecosystemLevel}.`,
+        headerTooltip: ecosystemColumnTooltip(ecosystemLevel),
         renderCell: (g) => {
           const dist = g.biomeDistributionByLevel?.[ecosystemLevel] ?? {};
           return Object.keys(dist).length ? (
             <div className="w-full px-1">
-              <BiomeDistributionChart distribution={dist} height={24} />
+              <BiomeDistributionChart
+                distribution={dist}
+                height={24}
+                valueLabel={ecosystemValueLabel(ecosystemLevel)}
+                footnote={ecosystemResolvedNote(ecosystemLevel, g.ecosystemResolvedPctByLevel?.[ecosystemLevel])}
+              />
             </div>
           ) : (
             <span className="text-xs text-muted-foreground">No data</span>
@@ -449,7 +473,7 @@ export default function StudyDetailPage() {
 
   const { study, metrics, geography, environment_distribution } = detail;
 
-  const title = study.title || study.study_name || study.study_key;
+  const title = studyTitle({ ...study, accession: study.accessions[0], bioproject: study.bioprojects[0] });
   const accessions = [...new Set([...study.accessions, ...study.bioprojects])];
   // Some custom studies carry their DOI as the accession.
   const paperDois = study.dois.filter(
@@ -722,7 +746,7 @@ export default function StudyDetailPage() {
                   {geography.geo_tagged > mapSamples.length && ` · showing ${num(mapSamples.length)}`}. Points
                   the source flags as unreliable are excluded.
                 </p>
-                <SampleMapDots samples={mapSamples} height={460} />
+                <SampleMapDots samples={mapSamples} height={460} areaLinks={mapAreaLinks} />
               </div>
             </CollapsibleSection>
           )}

@@ -14,6 +14,7 @@ import type {
   FilterOperator,
   FilterValue,
 } from '@/lib/filters/types';
+import { conditionThreshold, formatShareThreshold, shareSpecForField } from '@/lib/filters/share-fields';
 import { formatOperatorLabel, isTwoChoiceToggle, normalizeValue, operatorChoices, validateCondition } from './helpers';
 
 interface ConditionRowProps {
@@ -50,8 +51,13 @@ export function ConditionRow({
       field: fieldId,
       operator: nextField?.defaultOperator ?? operatorValue,
       value: '',
+      // A share field starts at its default threshold; any other field carries none.
+      threshold: nextField?.share?.defaultThreshold,
     });
   };
+
+  const shareSpec = selectedField?.share ? shareSpecForField(selectedField.id) : null;
+  const threshold = conditionThreshold(condition);
 
   const handleOperatorChange = (operator: FilterOperator) => {
     onChange({
@@ -133,6 +139,35 @@ export function ConditionRow({
             onChange={handleValueChange}
             isInvalid={Boolean(validation.valueError)}
           />
+
+          {shareSpec && selectedField.share && (
+            <Select
+              value={String(threshold)}
+              onValueChange={(val) => onChange({ threshold: Number(val) })}
+            >
+              <SelectTrigger
+                className={cn(
+                  'h-8 text-xs',
+                  // Same status as an out-of-list operator: a threshold this field
+                  // does not offer, from a hand-edited link. The server refuses it.
+                  !selectedField.share.thresholds.includes(threshold) && 'border-warning text-warning',
+                )}
+                aria-label="Share of members"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(selectedField.share.thresholds.includes(threshold)
+                  ? selectedField.share.thresholds
+                  : [...selectedField.share.thresholds, threshold]
+                ).map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {formatShareThreshold(shareSpec, option)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </>
       )}
 
@@ -201,7 +236,10 @@ function ConditionValueInput({
         : [String(value)];
     return (
       <FacetValueCombobox
-        field={field.id}
+        field={field.vocabField ?? field.id}
+        // A share field's count would be families at SOME threshold, which reads
+        // as the answer to the row's own threshold. It is not, so none is shown.
+        showCounts={!field.share}
         multiple={multiple}
         value={values}
         onChange={(vals) => onChange(multiple ? vals : (vals[0] ?? ''))}

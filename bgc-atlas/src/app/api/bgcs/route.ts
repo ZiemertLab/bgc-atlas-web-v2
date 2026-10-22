@@ -8,9 +8,11 @@ import {
   buildBgcAdvancedCondition,
   isValidUuid,
   toLike,
+  toPrefixLike,
 } from './advanced-condition';
+import { parseBgcSearch } from '@/lib/bgc/search-text';
 import { bgcFilterFields } from '@/lib/filters/field-definitions';
-import { filterRefusalResponse } from '@/lib/api/filter-refusal';
+import { bgcFilterRefusal, filterRefusalResponse } from '@/lib/api/filter-refusal';
 import { deepPageRefusal } from '@/lib/api/deep-page-refusal';
 import { parseAdvancedFilterParam } from '@/lib/filters/types';
 import { buildAdvancedWhereAsync } from '@/lib/filters/prisma-builders';
@@ -20,6 +22,10 @@ import { collapseConsecutiveLevels } from '@/lib/utils/metadata-parser';
 import {
   aggregateBrowseIndex, countBrowseIndex, isBrowseSearchEnabled, searchBrowseIndex,
   searchBrowseIndexWithBody, sortKeysBrowseIndex,
+  isTransientBrowseError,
+  isBrowseQueryRejection,
+  browseQueryRejectionResponse,
+  withBrowseTimeout,
 } from '@/lib/opensearch/browse-client';
 import {
   BROWSE_RESULT_WINDOW, countResolvedPageBody, isPastTheEnd, planCountResolvedPage,
@@ -30,6 +36,7 @@ import { mapBgcBrowseDocument } from '@/lib/opensearch/bgc-browse-mapper';
 import { withKnownClusterHits } from '@/lib/opensearch/known-cluster-decorations';
 import { applySortFieldGuard } from '@/lib/bgc-sort';
 import { serverError } from '@/lib/api/errors';
+import { createConcurrencyGate, GateBusyError } from '@/lib/api/concurrency-gate';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -44,6 +51,15 @@ const BGC_SORTS_WITH_OWN_KEY = new Set([
 ]);
 
 /**
+ * One name per product sort. The table sends `type` / `class`; the index also takes
+ * `product` / `category` and the pre-rename `productType` / `productCategory`, which
+ * this path did not know and so sorted by id.
+ */
+const BGC_SORT_ALIASES: Record<string, string> = {
+  product: 'type', productType: 'type', category: 'class', productCategory: 'class',
+};
+
+/**
  * Single-field sorts that skip the `b.id` paging tiebreaker because it costs the
  * index that supplies the ordering. `completeness` (a boolean) drops from ~10 ms
  * to a >20 s full sort with it; paging on it is therefore not deterministic.
@@ -51,6 +67,31 @@ const BGC_SORTS_WITH_OWN_KEY = new Set([
  * index already applies the tiebreaker.
  */
 const TIEBREAK_EXEMPT_BGC_SORTS = new Set<string>(['completeness']);
+
+/**
+ * ORDER BY key for an array column, the way the browse index orders it: a
+ * multi-valued keyword sorts by its smallest element ascending and its largest
+ * descending, in byte order (COLLATE "C": 'PKS' before 'other'), with empty arrays
+ * last either way, so both backends return the same order. `column` is a fixed
+ * column name, never request input.
+ */
+function arraySortKey(column: 'b.product' | 'b.product_category', order: 'ASC' | 'DESC'): string {
+  const pick = order === 'ASC' ? 'min' : 'max';
+  return `(SELECT ${pick}(v COLLATE "C") FROM unnest(${column}) v) ${order} NULLS LAST`;
+}
+
+/**
+ * ORDER BY key for a text sort, the way the browse index orders it: byte order
+ * (COLLATE "C"), missing last in both directions. The database collation (en_US)
+ * sorts case and punctuation differently, so without it the two backends
+ * disagree. The name sort has no NULLS clause: filename is NOT NULL, and a
+ * DESC NULLS LAST could not walk idx_bgcs_filename_c backwards.
+ */
+const BIOME_SORT_KEY = `COALESCE(bbs.resolved_biome_level_1, bbs.environment_biome, bbs.environment_feature, bbs.environment_material)`;
+const TAXONOMY_SORT_KEY = `COALESCE(t.species, t.genus, t.family, t.order_name, t.class, t.phylum, t.domain)`;
+function textSortKey(expr: string, order: string, nullable = true): string {
+  return `${expr} COLLATE "C" ${order}${nullable ? ' NULLS LAST' : ''}`;
+}
 
 /**
  * Whether the single-field ORDER BY needs `b.id ASC` appended. No sort key is
@@ -162,6 +203,48 @@ const parseNumber = (value: string | null, options: { fallback?: number; clampMi
   return result;
 };
 
+/**
+ * The SQL fallback, guarded. It runs when the browse index cannot answer (down,
+ * stalled, or switched off during a re-clustering cutover), and then every /bgcs
+ * request takes it. A box query on cold storage can need tens of thousands of
+ * random reads, and a few of those held for the full statement timeout starve
+ * the connection pool for the whole site. So: at most two fallback requests at
+ * once (each uses two connections, count and page), a caller over that waits
+ * 10 s for a slot, and each query gets 45 s. What does not fit gets a 503 that
+ * says why.
+ */
+const FALLBACK_GATE = createConcurrencyGate(2, 10_000);
+const FALLBACK_STATEMENT_TIMEOUT = '45s';
+const FALLBACK_BUSY_MESSAGE =
+  'The search index is temporarily unavailable and the backup search is busy. Please try again in a minute.';
+const FALLBACK_TIMEOUT_MESSAGE =
+  'The search index is temporarily unavailable, and this search is too large for the backup to answer in time. '
+  + 'Try a smaller area or fewer filters, or try again shortly.';
+
+/** Per-call budget for the one retry after a transient index failure. Index answers
+ *  take 0.1-0.3 s; 5 s rides out a stall without stacking long waits. */
+const BROWSE_RETRY_TIMEOUT_MS = 5_000;
+
+async function withFallbackTimeout<T>(query: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  // SET LOCAL ends with the transaction, so the pooled connection goes back as it was.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = '${FALLBACK_STATEMENT_TIMEOUT}'`);
+    return query(tx);
+  }, { timeout: 50_000, maxWait: 10_000 });
+}
+
+/** A query cancelled by statement_timeout (SQLSTATE 57014), as Prisma reports a raw query's failure. */
+function isStatementTimeout(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  const meta = error.meta as { code?: unknown } | undefined;
+  return meta?.code === '57014' || /statement timeout/i.test(error.message);
+}
+
+// userFacing: the client shows a 503's text only when it says so (api-client.ts).
+const fallbackUnavailable = (message: string) => NextResponse.json(
+  { success: false, error: message, userFacing: true },
+  { status: 503, headers: { 'Retry-After': '30' } },
+);
 const RESOLVER_PROBE_LOG_THRESHOLD = 20;
 
 export async function GET(request: Request) {
@@ -172,8 +255,15 @@ export async function GET(request: Request) {
     const limit = parseNumber(params.get('limit'), { fallback: DEFAULT_LIMIT, clampMin: 1, clampMax: MAX_LIMIT }) ?? DEFAULT_LIMIT;
     const offset = parseNumber(params.get('offset'), { fallback: 0, clampMin: 0 }) ?? 0;
 
+    // Before either backend, so both refuse the same URL: an unknown goldBucket
+    // matched nothing on the index while the SQL below dropped it, an unknown
+    // sourceType gave an empty table, and an unknown completeness (`unknown`
+    // included) was ignored by both -- the whole corpus.
+    const badFilter = bgcFilterRefusal(params);
+    if (badFilter) return badFilter;
+
     if (isBrowseSearchEnabled('bgcs') && supportsBrowseSearch('bgcs', params)) {
-      try {
+      const serveFromIndex = async (): Promise<NextResponse> => {
         // Past from+size = 10,000 the index refuses and the SQL fallback times
         // out, so resolve the rank by counting. Returns null when it cannot.
         const resolved = await planCountResolvedPage(
@@ -219,11 +309,31 @@ export async function GET(request: Request) {
           success: true,
           data: { data: await withKnownClusterHits(rows), total: result.total, limit, offset },
         });
+      };
+      try {
+        return await serveFromIndex();
       } catch (error) {
         // A refused filter is a 400, not an outage; falling through would re-refuse
         // after a full-corpus scan.
         if (filterRefusalResponse(error)) throw error;
-        console.error('OpenSearch BGC browse query failed; falling back to PostgreSQL', error);
+        // So is a value the index cannot use: the fallback reached a 503 after 45 s.
+        if (isBrowseQueryRejection(error)) return browseQueryRejectionResponse(error, 'BGC browse');
+        if (!isTransientBrowseError(error)) {
+          console.error('OpenSearch BGC browse query failed; falling back to PostgreSQL', error);
+        } else {
+          // A stall or a dropped connection, not a refusal: one more try, on a short
+          // budget, costs at most a few seconds where the fallback can cost 45.
+          console.warn('OpenSearch BGC browse query failed transiently; retrying once', error);
+          try {
+            return await withBrowseTimeout(BROWSE_RETRY_TIMEOUT_MS, serveFromIndex);
+          } catch (retryError) {
+            if (filterRefusalResponse(retryError)) throw retryError;
+            if (isBrowseQueryRejection(retryError)) {
+              return browseQueryRejectionResponse(retryError, 'BGC browse');
+            }
+            console.error('OpenSearch BGC browse retry failed; falling back to PostgreSQL', retryError);
+          }
+        }
       }
     }
 
@@ -245,15 +355,21 @@ export async function GET(request: Request) {
     // The gcf filter rides the `bg` join so the planner can drive off idx_bgc_gcf_thr_gcf.
     let gcfJoinCond: Prisma.Sql = Prisma.empty;
 
-    const search = params.get('search');
-    if (search && search.trim()) {
-      const like = toLike(search.trim());
-      filters.push(Prisma.sql`(
-        b.id::text ILIKE ${like}
-        OR b.filename ILIKE ${like}
-        OR b.assembly::text ILIKE ${like}
-        OR b.contig ILIKE ${like}
-        OR bbs.resolved_biome_level_1 ILIKE ${like}
+    // Matched by the same rule as the OpenSearch path (lib/bgc/search-text.ts): a
+    // UUID exactly, the identifiers by prefix, the rest by "contains".
+    const search = parseBgcSearch(params.get('search') ?? '');
+    if (search) {
+      const like = toLike(search.kind === 'text' ? search.text : search.uuid);
+      const prefix = toPrefixLike(search.kind === 'text' ? search.text : search.uuid);
+      const identifiers = search.kind === 'uuid'
+        ? Prisma.sql`b.id = ${search.uuid}::uuid OR b.assembly = ${search.uuid}::uuid`
+        : Prisma.sql`b.id::text ILIKE ${prefix}
+        OR b.filename ILIKE ${prefix}
+        OR b.assembly::text ILIKE ${prefix}
+        OR b.contig ILIKE ${prefix}`;
+      const described = search.kind === 'uuid'
+        ? Prisma.sql`FALSE`
+        : Prisma.sql`bbs.resolved_biome_level_1 ILIKE ${like}
         OR bbs.resolved_biome_level_2 ILIKE ${like}
         OR bbs.resolved_biome_level_3 ILIKE ${like}
         OR bbs.resolved_biome_level_4 ILIKE ${like}
@@ -268,8 +384,8 @@ export async function GET(request: Request) {
           JOIN samples s ON s.id = sa.sample_id
           WHERE sa.assembly_id = b.assembly
             AND (s.external_id ILIKE ${like} OR s.name ILIKE ${like})
-        )
-      )`);
+        )`;
+      filters.push(Prisma.sql`(${identifiers} OR ${described})`);
       filterTouches.bbs = true;
       // INNER although this OR doesn't uniformly constrain bbs: ?search= is a hot
       // path and LEFT would cost it the pushdown.
@@ -445,19 +561,36 @@ export async function GET(request: Request) {
       ? goldBucketSqlForColumn(bgcGoldBucket.trim(), Prisma.sql`s.gold_ecosystem_path`)
       : null;
 
+    // ?sourceType= (repeatable): the assembly's source type -- the OpenSearch
+    // path's assembly_source_type is assemblies.source_type. Beside a box or a
+    // bucket it is a JOIN inside that EXISTS, not an EXISTS of its own: as a second
+    // subquery on b.assembly the planner dropped the box's nested loop and a
+    // 51,416-BGC box hit the 120 s statement_timeout.
+    const sourceTypes = params.getAll('sourceType').map((v) => v.trim()).filter(Boolean);
+    const sourceTypeCond = sourceTypes.length
+      ? Prisma.sql`st_a.source_type IN (${Prisma.join(sourceTypes)})`
+      : null;
+
     if (geoConds.length > 0 || bucketCond) {
-      // Only a bare bucket can use the precomputed count; a bbox makes it an intersection.
-      if (bucketCond && geoConds.length === 0) soleGoldBucket = bgcGoldBucket!.trim();
+      // Only a bare bucket can use the precomputed count; a bbox or a source type
+      // makes it an intersection.
+      if (bucketCond && geoConds.length === 0 && !sourceTypeCond) soleGoldBucket = bgcGoldBucket!.trim();
       const sampleConds = [...geoConds];
       if (bucketCond) sampleConds.push(bucketCond);
+      if (sourceTypeCond) sampleConds.push(sourceTypeCond);
       filters.push(Prisma.sql`
         EXISTS (
           SELECT 1
           FROM sample_assemblies sa
           JOIN samples s ON s.id = sa.sample_id
+          ${sourceTypeCond ? Prisma.sql`JOIN assemblies st_a ON st_a.id = sa.assembly_id` : Prisma.empty}
           WHERE sa.assembly_id = b.assembly
             AND ${Prisma.join(sampleConds, ' AND ')}
         )
+      `);
+    } else if (sourceTypeCond) {
+      filters.push(Prisma.sql`
+        EXISTS (SELECT 1 FROM assemblies st_a WHERE st_a.id = b.assembly AND ${sourceTypeCond})
       `);
     }
 
@@ -580,6 +713,8 @@ export async function GET(request: Request) {
       sortOrders = ['DESC', 'DESC'];
     }
 
+    sortFields = sortFields.map((f) => (Object.hasOwn(BGC_SORT_ALIASES, f) ? BGC_SORT_ALIASES[f] : f));
+
     // Drop sorts that would order the whole corpus when nothing narrows the set
     // (`taxonomy` has no index); the default ordering is used instead.
     {
@@ -626,22 +761,22 @@ export async function GET(request: Request) {
           orderBy = Prisma.sql`ORDER BY b.assembly ${Prisma.raw(order)}`;
           break;
         case 'type':
-          orderBy = Prisma.sql`ORDER BY (CASE WHEN array_length(b.product,1) > 0 THEN b.product[1] ELSE NULL END) ${Prisma.raw(order)}`;
+          orderBy = Prisma.sql`ORDER BY ${Prisma.raw(arraySortKey('b.product', order))}`;
           break;
         case 'class':
-          orderBy = Prisma.sql`ORDER BY (CASE WHEN array_length(b.product_category,1) > 0 THEN b.product_category[1] ELSE NULL END) ${Prisma.raw(order)}`;
+          orderBy = Prisma.sql`ORDER BY ${Prisma.raw(arraySortKey('b.product_category', order))}`;
           break;
         case 'completeness':
           orderBy = Prisma.sql`ORDER BY b.is_complete ${Prisma.raw(order)}`;
           break;
         case 'name':
-          orderBy = Prisma.sql`ORDER BY b.filename ${Prisma.raw(order)}`;
+          orderBy = Prisma.raw(`ORDER BY ${textSortKey('b.filename', order, false)}`);
           break;
         case 'biome':
-          orderBy = Prisma.sql`ORDER BY COALESCE(bbs.resolved_biome_level_1, bbs.environment_biome, bbs.environment_feature, bbs.environment_material) ${Prisma.raw(order)}`;
+          orderBy = Prisma.raw(`ORDER BY ${textSortKey(BIOME_SORT_KEY, order)}`);
           break;
         case 'taxonomy':
-          orderBy = Prisma.sql`ORDER BY COALESCE(t.species, t.genus, t.family, t.order_name, t.class, t.phylum, t.domain) ${Prisma.raw(order)} NULLS LAST`;
+          orderBy = Prisma.raw(`ORDER BY ${textSortKey(TAXONOMY_SORT_KEY, order)}`);
           break;
         default:
           orderBy = Prisma.sql`ORDER BY b.id ${Prisma.raw(order)}`;
@@ -672,22 +807,22 @@ export async function GET(request: Request) {
             orderParts.push(`b.assembly ${order}`);
             break;
           case 'type':
-            orderParts.push(`(CASE WHEN array_length(b.product,1) > 0 THEN b.product[1] ELSE NULL END) ${order}`);
+            orderParts.push(arraySortKey('b.product', order));
             break;
           case 'class':
-            orderParts.push(`(CASE WHEN array_length(b.product_category,1) > 0 THEN b.product_category[1] ELSE NULL END) ${order}`);
+            orderParts.push(arraySortKey('b.product_category', order));
             break;
           case 'completeness':
             orderParts.push(`b.is_complete ${order}`);
             break;
           case 'name':
-            orderParts.push(`b.filename ${order}`);
+            orderParts.push(textSortKey('b.filename', order, false));
             break;
           case 'biome':
-            orderParts.push(`COALESCE(bbs.resolved_biome_level_1, bbs.environment_biome, bbs.environment_feature, bbs.environment_material) ${order}`);
+            orderParts.push(textSortKey(BIOME_SORT_KEY, order));
             break;
           case 'taxonomy':
-            orderParts.push(`COALESCE(t.species, t.genus, t.family, t.order_name, t.class, t.phylum, t.domain) ${order} NULLS LAST`);
+            orderParts.push(textSortKey(TAXONOMY_SORT_KEY, order));
             break;
           default:
             orderParts.push(`b.id ${order}`);
@@ -734,9 +869,21 @@ export async function GET(request: Request) {
         if (c !== undefined) return c;
       }
 
-      // Filtered count: only the joins the active filters need. INNER lets the
-      // planner push the filter into the joined-table index scan (LEFT costs ~17s
-      // on 11.7M rows), but is only sound per innerJoin (see advancedFilterRequires).
+      // Filtered count: only the JOINs the active filters need (filterJoins).
+      const totalResult = await withFallbackTimeout((tx) => tx.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM bgcs b
+        ${joinsFor(filterJoins())}
+        ${where}
+      `));
+      return Number(totalResult?.[0]?.count ?? 0);
+    };
+
+    // The joins the active filters need, for the count and the page query's inner
+    // step. INNER lets the planner push the filter into the joined-table index scan
+    // (LEFT costs ~17s on 11.7M rows), but is only sound per innerJoin (see
+    // advancedFilterRequires).
+    function filterJoins(): Prisma.Sql[] {
       const countJoins: Prisma.Sql[] = [];
       if (filterTouches.bbs) {
         countJoins.push(innerJoin.bbs
@@ -761,17 +908,9 @@ export async function GET(request: Request) {
       if (filterTouches.bg) {
         countJoins.push(Prisma.sql`INNER JOIN bgc_gcf bg ON bg.bgc_id = b.id AND bg.is_primary ${gcfJoinCond}`);
       }
-      const joinsClause = countJoins.length
-        ? Prisma.join(countJoins, ' ')
-        : Prisma.empty;
-      const totalResult = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-        SELECT COUNT(*)::bigint AS count
-        FROM bgcs b
-        ${joinsClause}
-        ${where}
-      `);
-      return Number(totalResult?.[0]?.count ?? 0);
-    };
+      return countJoins;
+    }
+    const joinsFor = (joins: Prisma.Sql[]) => (joins.length ? Prisma.join(joins, ' ') : Prisma.empty);
 
     const fetchData = async () => {
       type RawRow = {
@@ -813,7 +952,31 @@ export async function GET(request: Request) {
         gtdb_lineage: string | null;
       };
 
-      const rows = await prisma.$queryRaw<RawRow[]>(Prisma.sql`
+      // Two steps. The inner one finds the page -- filter, sort, LIMIT/OFFSET --
+      // over bgcs and only the joins the filters and the sort need. The outer one
+      // reads the page's columns from everything else, for those `limit` rows.
+      //
+      // In one step PostgreSQL could not take the LIMIT before the decorating
+      // joins: it read biome, samples, data sources and taxonomy for every match
+      // and then kept 50 (seconds of cold reads even for a small map box), and with
+      // ten relations against join_collapse_limit 8 it often walked bgcs in ORDER BY
+      // order instead. The inner step has few enough relations to plan freely.
+      //
+      // The outer ORDER BY repeats the inner one over the same rows (every join
+      // here is at most one row per BGC), so the page keeps the inner order.
+      const pageJoins = [...filterJoins()];
+      if (!filterTouches.bg && sortFields.some((f) => f === 'gcf' || f === 'distance')) {
+        pageJoins.push(Prisma.sql`LEFT JOIN bgc_gcf bg ON bg.bgc_id = b.id AND bg.is_primary`);
+      }
+      if (!filterTouches.bbs && sortFields.includes('biome')) {
+        pageJoins.push(Prisma.sql`LEFT JOIN bgc_biome_summary_mv bbs ON bbs.bgc_id = b.id`);
+      }
+      if (!filterTouches.t && sortFields.includes('taxonomy')) {
+        pageJoins.push(Prisma.sql`LEFT JOIN bgc_taxonomy bt ON bt.bgc_id = b.id`);
+        pageJoins.push(Prisma.sql`LEFT JOIN taxonomies t ON t.id = bt.taxonomy_id`);
+      }
+
+      const rows = await withFallbackTimeout((tx) => tx.$queryRaw<RawRow[]>(Prisma.sql`
         SELECT
           b.id,
           b.assembly,
@@ -855,7 +1018,15 @@ export async function GET(request: Request) {
           t.genus AS taxonomy_genus,
           t.species AS taxonomy_species,
           t.gtdb_lineage
-        FROM bgcs b
+        FROM (
+          SELECT b.id
+          FROM bgcs b
+          ${joinsFor(pageJoins)}
+          ${where}
+          ${orderBy}
+          LIMIT ${limit} OFFSET ${offset}
+        ) page
+        JOIN bgcs b ON b.id = page.id
         LEFT JOIN assemblies a ON a.id = b.assembly
         ${filterTouches.bg
           ? Prisma.sql`INNER JOIN bgc_gcf bg ON bg.bgc_id = b.id AND bg.is_primary ${gcfJoinCond}`
@@ -878,10 +1049,8 @@ export async function GET(request: Request) {
                        INNER JOIN taxonomies t ON t.id = bt.taxonomy_id`
           : Prisma.sql`LEFT JOIN bgc_taxonomy bt ON bt.bgc_id = b.id
                        LEFT JOIN taxonomies t ON t.id = bt.taxonomy_id`}
-        ${where}
         ${orderBy}
-        LIMIT ${limit} OFFSET ${offset}
-      `);
+      `));
 
       const data = rows.map((r: RawRow) => {
         const product_category: string[] = Array.isArray(r.product_category) ? r.product_category : [];
@@ -968,10 +1137,25 @@ export async function GET(request: Request) {
       return data;
     };
 
-    const [total, data] = await Promise.all([
+    const runPage = () => Promise.all([
       getOrSetCache(countKey, fetchTotal, 600),
       getOrSetCache(dataKey, fetchData, 60),
     ]);
+    let page: Awaited<ReturnType<typeof runPage>>;
+    try {
+      page = await FALLBACK_GATE.run(runPage);
+    } catch (error) {
+      if (error instanceof GateBusyError) {
+        console.warn(`[api/bgcs] SQL fallback busy (${FALLBACK_GATE.active} running, ${FALLBACK_GATE.waiting} waiting); answered 503`);
+        return fallbackUnavailable(FALLBACK_BUSY_MESSAGE);
+      }
+      if (isStatementTimeout(error)) {
+        console.warn(`[api/bgcs] SQL fallback query passed ${FALLBACK_STATEMENT_TIMEOUT}; answered 503 (${url.search})`);
+        return fallbackUnavailable(FALLBACK_TIMEOUT_MESSAGE);
+      }
+      throw error;
+    }
+    const [total, data] = page;
 
     // An empty page past offset 0 on the unfiltered path: recount exactly (cached
     // for an hour) so the client can re-paginate to the true last page.

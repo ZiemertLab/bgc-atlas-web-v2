@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
-import { parseAndValidateCsv } from '@/lib/metadata/validation';
+import { decodeMetadataBytes, metadataProblems, parseAndValidateCsv } from '@/lib/metadata/validation';
 import { serverError } from '@/lib/api/errors';
+import { CONTRIBUTE_METADATA_MAX_BYTES } from '@/lib/contribute/limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// The submit route's limit, so a file that passes validation is not refused at submit.
+const MAX_FILE_SIZE = CONTRIBUTE_METADATA_MAX_BYTES;
 
 export async function POST(request: Request) {
   try {
@@ -34,7 +36,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const fileContent = await file.text();
+    // BOM dropped, UTF-16 decoded (decodeMetadataBytes).
+    const fileContent = decodeMetadataBytes(new Uint8Array(await file.arrayBuffer()));
 
     if (!fileContent.trim()) {
       return NextResponse.json(
@@ -44,6 +47,9 @@ export async function POST(request: Request) {
     }
 
     const { parsingResult, validationResult } = await parseAndValidateCsv(fileContent);
+    // The submit route's own verdict, so the page blocks exactly what it would refuse:
+    // rows that could not be read count, not just samples that failed validation.
+    const problems = metadataProblems(parsingResult, validationResult);
 
     return NextResponse.json({
       success: true,
@@ -54,7 +60,8 @@ export async function POST(request: Request) {
         errors: parsingResult.errors,
       },
       validation: {
-        valid: validationResult.valid,
+        valid: problems.length === 0,
+        problems,
         totalSamples: validationResult.totalSamples,
         validSamples: validationResult.validSamples,
         invalidSamples: validationResult.invalidSamples,

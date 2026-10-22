@@ -8,6 +8,7 @@ import {
   TooltipTrigger,
   TOOLTIP_WIDE_CLASS,
 } from '@/components/ui/tooltip';
+import { useTapToggleTooltip } from '@/components/ui/use-tap-toggle-tooltip';
 import { cn } from '@/lib/utils';
 
 type BadgeVariant = React.ComponentProps<typeof Badge>['variant'];
@@ -34,56 +35,38 @@ interface TooltipBadgeProps extends React.ComponentProps<'button'> {
   tooltip: React.ReactNode;
   /** Wider, left-aligned bubble. Explicit, unlike InfoTooltip: a ReactNode has no length to measure. */
   wide?: boolean;
+  /** Extra classes for the bubble, merged after `wide`'s, e.g. `max-w-[440px]`. */
+  contentClassName?: string;
 }
 
-// Radix tooltips never open on touch, so a click pins the bubble open until clicked again,
-// clicked away from, or dismissed with Escape. Hover still peeks on desktop.
+/**
+ * A badge whose tooltip opens by pointer, keyboard and touch, via {@link useTapToggleTooltip}
+ * (as `InfoTooltip`): hover peeks with no delay, focus opens it, a tap toggles it, a mouse
+ * click only opens it. A tap or click elsewhere, Escape, or the pointer leaving closes it.
+ * A caller's `onClick`/`onPointerDown` run first; their `preventDefault()` does not stop the
+ * toggle.
+ */
 export function TooltipBadge({
   variant,
   className,
   tooltip,
   wide = false,
+  contentClassName,
   children,
-  onClick,
   ...props
 }: TooltipBadgeProps) {
-  const [hoverOpen, setHoverOpen] = React.useState(false);
-  const [pinned, setPinned] = React.useState(false);
-
-  const close = React.useCallback(() => {
-    setPinned(false);
-    setHoverOpen(false);
-  }, []);
+  const { open, onOpenChange, triggerProps, contentProps } = useTapToggleTooltip();
 
   return (
-    <Tooltip
-      open={pinned || hoverOpen}
-      // While `open` is controlled Radix reports opening but not closing, so hover is closed
-      // by the pointer/focus handlers below.
-      onOpenChange={(open) => { if (open) setHoverOpen(true); }}
-    >
-      <TooltipTrigger asChild>
-        <BadgeButton
-          variant={variant}
-          className={cn('cursor-help', className)}
-          aria-expanded={pinned}
-          onPointerEnter={() => setHoverOpen(true)}
-          onPointerLeave={() => setHoverOpen(false)}
-          onFocus={() => setHoverOpen(true)}
-          onBlur={() => setHoverOpen(false)}
-          onClick={(event) => {
-            setPinned((wasPinned) => !wasPinned);
-            onClick?.(event);
-          }}
-          {...props}
-        >
+    <Tooltip open={open} onOpenChange={onOpenChange} delayDuration={0}>
+      <TooltipTrigger asChild {...triggerProps}>
+        <BadgeButton variant={variant} className={cn('cursor-help', className)} {...props}>
           {children}
         </BadgeButton>
       </TooltipTrigger>
       <TooltipContent
-        className={wide ? TOOLTIP_WIDE_CLASS : undefined}
-        onPointerDownOutside={close}
-        onEscapeKeyDown={close}
+        {...contentProps}
+        className={cn(wide && TOOLTIP_WIDE_CLASS, contentClassName)}
       >
         {tooltip}
       </TooltipContent>

@@ -34,6 +34,8 @@ export interface SequenceMapFilters {
   minCoverage?: number;
   queryFrom?: number;
   queryTo?: number;
+  /** The contig a selected locus lies on. */
+  queryId?: string;
 }
 
 const EMPTY: Response = { success: true, data: [], total: 0 };
@@ -49,6 +51,7 @@ export function useSequenceMapSamples(
   if (filters.minCoverage !== undefined) params.set('minCoverage', String(filters.minCoverage));
   if (filters.queryFrom !== undefined) params.set('queryFrom', String(filters.queryFrom));
   if (filters.queryTo !== undefined) params.set('queryTo', String(filters.queryTo));
+  if (filters.queryId !== undefined) params.set('queryId', filters.queryId);
   const query = params.toString();
 
   const result = useQuery<Response, Error>({

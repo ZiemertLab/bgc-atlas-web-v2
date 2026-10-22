@@ -13,6 +13,29 @@ export const doiUrl = (v: string) => `https://doi.org/${encodeURI(v.trim())}`;
 export const pubmedUrl = (v: string) =>
   `https://pubmed.ncbi.nlm.nih.gov/${encodeURIComponent(v.trim())}/`;
 
+// A name field that holds a placeholder rather than a name. One MGnify study
+// (MGYS00006083) carries "N/A" as its title, its study_name and so its key, and
+// it reached the h1, the list and the share card as "N/A".
+const isPlaceholderName = (v: string | null | undefined) =>
+  /^\s*(n\/?a|none|null)?\s*$/i.test(v ?? '');
+
+/**
+ * The name a study is shown under: its title, then study_name, then study_key --
+ * then, only when all three are placeholders, its accession or BioProject. Every
+ * place that names a study goes through here, so the h1, the list row and the
+ * share card agree.
+ */
+export function studyTitle(study: {
+  title?: string | null;
+  study_name?: string | null;
+  study_key?: string | null;
+  accession?: string | null;
+  bioproject?: string | null;
+}): string {
+  const candidates = [study.title, study.study_name, study.study_key, study.accession, study.bioproject];
+  return candidates.find((v) => !isPlaceholderName(v))?.trim() ?? study.study_key ?? '';
+}
+
 /**
  * `study_key` is COALESCE(study_name, accession, id), a join key that usually duplicates an
  * accession or the title; only author slugs like `CritsChristoph_2018_soil` earn a chip.
@@ -23,7 +46,7 @@ export function showStudyKey(
   { identifiers, title }: { identifiers: string[]; title: string | null | undefined },
 ): boolean {
   const key = (studyKey ?? '').trim();
-  if (!key) return false;
+  if (isPlaceholderName(key)) return false;
   if (key.toLowerCase().startsWith('custom_')) return false;
 
   const same = (other: string | null | undefined) =>

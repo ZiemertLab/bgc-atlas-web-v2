@@ -3,7 +3,8 @@
 import { apiFetch, withBase } from "@/lib/basePath";
 import Link from 'next/link';
 import Image from 'next/image';
-import { useState, useEffect, Fragment } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useState, useEffect, Fragment } from 'react';
 import { MainLayout } from '@/components/layout/main-layout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,10 +13,11 @@ import { ResizableTable } from '@/components/ui/resizable-table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { InfoTooltip } from '@/components/ui/info-tooltip';
 import { getTaxonDisplayName, formatTaxonomyBreadcrumb } from '@/lib/utils/taxonomy-utils';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Search, Loader2, ChevronDown, ChevronRight, ExternalLink, List, Map, X } from 'lucide-react';
+import { TaxonomyBadge } from '@/components/ui/taxonomy-badge';
+import { Search, Loader2, ChevronDown, ChevronRight, ExternalLink, List, Map } from 'lucide-react';
 import { sampleExportPath, useSamples } from '@/lib/hooks/use-samples';
 import { ExportMenu } from '@/components/ui/export-menu';
+import { ListErrorState } from '@/components/ui/list-error-state';
 import { downloadText, exportFilename, serializeExport, type ExportFormat } from '@/lib/export/format';
 import { GENOME_EXPORT_COLUMNS } from '@/lib/export/sample-columns';
 import { StudyScopeChip } from '@/components/ui/study-scope-chip';
@@ -43,70 +45,126 @@ import { CopyLinkButton } from '@/components/ui/copy-link-button';
 import { ColdLoadHint } from '@/components/ui/cold-load-hint';
 import { SampleMapDots } from '@/components/ui/sample-map-dots';
 import { RefetchFrame } from '@/components/ui/refetch-frame';
+import { isDeepPageRefusal, isFilterRefusal } from '@/lib/api-client';
+import { useLastKnown } from '@/lib/hooks/use-last-known';
 import {
   buildGenomeCollectionDataSourceHref,
   getGenomeCollectionsDefaultColumnVisibility,
 } from './genome-collections-table';
-
-/** Half-open boxes (only a min or a max) can come from hand-edited URLs, so each
- *  side degrades to an open bound rather than rendering NaN. */
-function formatAreaLabel(bbox: { latMin?: string; latMax?: string; lonMin?: string; lonMax?: string }): string {
-  const deg = (v: string | undefined, pos: string, neg: string): string | null => {
-    const n = Number(v);
-    if (v === undefined || v === '' || !Number.isFinite(n)) return null;
-    return `${Math.abs(n).toFixed(2).replace(/\.?0+$/, '')}°${n < 0 ? neg : pos}`;
-  };
-  const span = (min: string | null, max: string | null) =>
-    min && max ? `${min}–${max}` : min ? `≥ ${min}` : max ? `≤ ${max}` : null;
-
-  return [
-    span(deg(bbox.latMin, 'N', 'S'), deg(bbox.latMax, 'N', 'S')),
-    span(deg(bbox.lonMin, 'E', 'W'), deg(bbox.lonMax, 'E', 'W')),
-  ].filter(Boolean).join(', ');
-}
+import { readNumber, readOneOf, readPage, readPageSize, type UrlEntry } from '@/lib/url-state';
+import { useExternalNavigationKey, useMirrorToUrl } from '@/lib/hooks/use-mirror-to-url';
+import { FilterChips, type FilterChip } from '@/components/ui/filter-chips';
+import { appliedFilterValue, formatAreaLabel, formatRangeLabel, optionLabel } from '@/lib/filter-chip-labels';
+import { goldBucketLabel } from '@/lib/utils/gold-buckets';
 
 const formatPercent = (value: number) =>
   value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 export default function GenomeCollectionsPage() {
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
-  const [searchTerm, setSearchTerm] = useState('');
+  return (
+    <Suspense fallback={null}>
+      <GenomeCollectionsPageKeyed />
+    </Suspense>
+  );
+}
+
+/** Remounts the page on a same-route navigation it did not write, so it re-seeds
+ *  from the URL like a fresh visit (see useMirrorToUrl). */
+function GenomeCollectionsPageKeyed() {
+  const navKey = useExternalNavigationKey();
+  return <GenomeCollectionsPageInner key={navKey} />;
+}
+
+/** The page sizes both Pagination controls offer; a `size` outside them reads as the default. */
+const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * Every column this table sorts by that /api/samples honours (its sortFieldMap,
+ * and the index's sampleSort). A `sort` outside it reads as the default, so the
+ * URL never claims an order the server drops.
+ */
+const GENOME_SORT_FIELDS = [
+  'id', 'assemblies', 'bgcs', 'completeness', 'contamination', 'genomeQuality',
+  'biome', 'study', 'dataSource',
+] as const;
+const DEFAULT_SORT_FIELD = 'bgcs';
+const DEFAULT_SORT_ORDER = 'desc' as const;
+
+function GenomeCollectionsPageInner() {
+  const searchParams = useSearchParams();
+  const paramOr = (key: string, fallback = '') => searchParams.get(key) ?? fallback;
+
+  // Every filter, the sort, the paging and the table/map toggle are seeded from
+  // the URL in useState initializers, so the first request already carries
+  // them. useMirrorToUrl below writes them back and is the page's only URL
+  // writer. A same-route navigation it did not write (the nav item's bare
+  // /genome-collections, Back to another filtered entry) remounts this component
+  // through GenomeCollectionsPageKeyed, so it seeds again from the new URL.
+  //
+  // Names other pages link with are kept: id (sampleBrowseHref), studyKey (a
+  // study's Samples panel and its map), latMin..lonMax (the property-search map,
+  // a study map's area). Table vs map is `display`, as on /samples.
+  const [currentPage, setCurrentPage] = useState(() => readPage(paramOr('page')));
+  const [pageSize, setPageSize] = useState(() =>
+    readPageSize(paramOr('size'), PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE),
+  );
+  const [searchTerm, setSearchTerm] = useState(() => paramOr('search'));
   const [mounted, setMounted] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [expandedAssemblies, setExpandedAssemblies] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<Record<string, string>>({});
-  const [sortField, setSortField] = useState('bgcs');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [viewMode, setViewMode] = useState<'table' | 'map'>('table');
+  const [sortField, setSortField] = useState<string>(
+    () => readOneOf(paramOr('sort'), GENOME_SORT_FIELDS, DEFAULT_SORT_FIELD),
+  );
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(
+    () => readOneOf(paramOr('order'), ['asc', 'desc'] as const, DEFAULT_SORT_ORDER),
+  );
+  const [viewMode, setViewMode] = useState<'table' | 'map'>(
+    () => (paramOr('display') === 'map' ? 'map' : 'table'),
+  );
 
   const [, setDataSourceInitialized] = useState(false);
   const [dataSourceOptions, setDataSourceOptions] = useState<{ label: string; value: string }[]>([]);
   const [dataSourceUrls, setDataSourceUrls] = useState<Record<string, string>>({});
 
   const [showFilters, setShowFilters] = useState<Record<string, boolean>>({});
-  const [filterId, setFilterId] = useState('');
-  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState('');
-  const [filterBiome, setFilterBiome] = useState('');
-  const [filterStudy, setFilterStudy] = useState('');
-  const [filterDataSource, setFilterDataSource] = useState('');
-  const [filterGenomeType, setFilterGenomeType] = useState('');
-  const [assembliesMin, setAssembliesMin] = useState<string>('');
-  const [assembliesMax, setAssembliesMax] = useState<string>('');
-  const [bgcsMin, setBgcsMin] = useState<string>('');
-  const [bgcsMax, setBgcsMax] = useState<string>('');
-  const [completenessMin, setCompletenessMin] = useState<string>('');
-  const [completenessMax, setCompletenessMax] = useState<string>('');
-  const [contaminationMin, setContaminationMin] = useState<string>('');
-  const [contaminationMax, setContaminationMax] = useState<string>('');
-  const [filterGenomeQuality, setFilterGenomeQuality] = useState('');
-  // Seeded from the URL only (map deep links); there is no lat/lon column, so the
-  // bounds surface as a clearable chip.
-  const [bbox, setBbox] = useState<{ latMin?: string; latMax?: string; lonMin?: string; lonMax?: string }>({});
+  const [filterId, setFilterId] = useState(() => paramOr('id'));
+  const [filterGoldEcosystem, setFilterGoldEcosystem] = useState(() => paramOr('goldEcosystem'));
+  const [filterBiome, setFilterBiome] = useState(() => paramOr('biome'));
+  const [filterStudy, setFilterStudy] = useState(() => paramOr('study'));
+  // Taken as given: the options load after the first render, so an unknown id
+  // cannot be told from one not loaded yet. The server narrows by it either way.
+  const [filterDataSource, setFilterDataSource] = useState(() => paramOr('dataSource'));
+  // Raw, like every filter: /api/samples refuses an unknown sourceType, and that
+  // refusal (not a silent corpus-wide answer) is what a bad link should get.
+  const [filterGenomeType, setFilterGenomeType] = useState(() => paramOr('genomeType'));
+  const [assembliesMin, setAssembliesMin] = useState<string>(() => readNumber(paramOr('assembliesMin')));
+  const [assembliesMax, setAssembliesMax] = useState<string>(() => readNumber(paramOr('assembliesMax')));
+  const [bgcsMin, setBgcsMin] = useState<string>(() => readNumber(paramOr('bgcsMin')));
+  const [bgcsMax, setBgcsMax] = useState<string>(() => readNumber(paramOr('bgcsMax')));
+  const [completenessMin, setCompletenessMin] = useState<string>(() => readNumber(paramOr('completenessMin')));
+  const [completenessMax, setCompletenessMax] = useState<string>(() => readNumber(paramOr('completenessMax')));
+  const [contaminationMin, setContaminationMin] = useState<string>(() => readNumber(paramOr('contaminationMin')));
+  const [contaminationMax, setContaminationMax] = useState<string>(() => readNumber(paramOr('contaminationMax')));
+  const [filterGenomeQuality, setFilterGenomeQuality] = useState(() => paramOr('genomeQuality'));
+  // Geographic bounds — the property-search map and a study map's area select
+  // deep-link an area here. There is no lat/lon column to filter on, so the
+  // bounds surface as a clearable chip instead.
+  const [bbox, setBbox] = useState<{ latMin?: string; latMax?: string; lonMin?: string; lonMax?: string }>(() => ({
+    latMin: readNumber(paramOr('latMin')) || undefined,
+    latMax: readNumber(paramOr('latMax')) || undefined,
+    lonMin: readNumber(paramOr('lonMin')) || undefined,
+    lonMax: readNumber(paramOr('lonMax')) || undefined,
+  }));
   const hasBbox = Boolean(bbox.latMin || bbox.latMax || bbox.lonMin || bbox.lonMax);
   // ?studyKey= is the exact key; the `study` column filter matches titles, which
   // are shared by several studies.
-  const [studyKeyFilter, setStudyKeyFilter] = useState('');
+  const [studyKeyFilter, setStudyKeyFilter] = useState(() => paramOr('studyKey').trim());
+  // The environment bucket a study map's area link carries (sample-map-dots
+  // buildQuery). RAW, as on /samples: the API refuses an unknown bucket with a
+  // 400 that names it (goldBucketRefusal), so the client does not validate it.
+  const [goldBucketFilter, setGoldBucketFilter] = useState(() => paramOr('goldBucket'));
 
   useEffect(() => {
     let cancelled = false;
@@ -256,55 +314,33 @@ export default function GenomeCollectionsPage() {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const idParam = params.get('id');
-      if (idParam) {
-        setFilterId(idParam);
-        setCurrentPage(0);
-      }
-      const area = {
-        latMin: params.get('latMin') ?? undefined,
-        latMax: params.get('latMax') ?? undefined,
-        lonMin: params.get('lonMin') ?? undefined,
-        lonMax: params.get('lonMax') ?? undefined,
-      };
-      if (area.latMin || area.latMax || area.lonMin || area.lonMax) {
-        setBbox(area);
-        setCurrentPage(0);
-      }
-      const studyKeyParam = params.get('studyKey')?.trim();
-      if (studyKeyParam) setStudyKeyFilter(studyKeyParam);
-    } catch {
-      // ignore
-    }
-  }, []);
+  // Clearing a filter drops it from the URL too (through the mirror), so a copied
+  // link or a reload doesn't silently re-apply what the user just cleared. The
+  // page goes back to 1 through the filterSignature guard below.
+  const clearStudyKey = () => setStudyKeyFilter('');
 
-  // Clearing a filter also drops it from the URL, so a reload does not re-apply it.
-  const clearStudyKey = () => {
+  /** "Clear all" on the chips row: every filter, the study scope included (as on
+   *  /samples). Sort, view and paging stay; the page goes back to 1 anyway. */
+  const clearAllFilters = () => {
+    setSearchTerm('');
     setStudyKeyFilter('');
-    try {
-      const params = new URLSearchParams(window.location.search);
-      params.delete('studyKey');
-      const qs = params.toString();
-      window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
-    } catch {
-      // ignore
-    }
-  };
-
-  const clearBbox = () => {
+    setGoldBucketFilter('');
+    setFilterId('');
+    setFilterGoldEcosystem('');
+    setFilterBiome('');
+    setFilterStudy('');
+    setFilterDataSource('');
+    setFilterGenomeType('');
+    setAssembliesMin('');
+    setAssembliesMax('');
+    setBgcsMin('');
+    setBgcsMax('');
+    setCompletenessMin('');
+    setCompletenessMax('');
+    setContaminationMin('');
+    setContaminationMax('');
+    setFilterGenomeQuality('');
     setBbox({});
-    setCurrentPage(0);
-    try {
-      const params = new URLSearchParams(window.location.search);
-      for (const key of ['latMin', 'latMax', 'lonMin', 'lonMax']) params.delete(key);
-      const qs = params.toString();
-      window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
-    } catch {
-      // ignore
-    }
   };
 
   const activeDataSourceFilter = dDataSource || undefined;
@@ -317,6 +353,7 @@ export default function GenomeCollectionsPage() {
   };
 
   const mapFilterParams = {
+    goldBucket: goldBucketFilter || undefined,
     search: dSearch || undefined,
     id: dId || undefined,
     goldEcosystem: dGoldEcosystem || undefined,
@@ -340,6 +377,7 @@ export default function GenomeCollectionsPage() {
   // Unfiltered, the map uses the static snapshot; any active filter switches to
   // the live query so the dots match the table.
   const mapHasActiveFilters = Boolean(
+    mapFilterParams.goldBucket ||
     mapFilterParams.search || mapFilterParams.id || mapFilterParams.biome ||
     mapFilterParams.goldEcosystem || mapFilterParams.study || mapFilterParams.studyKey ||
     mapFilterParams.dataSource || dGenomeType ||
@@ -351,6 +389,7 @@ export default function GenomeCollectionsPage() {
   );
 
   const genomeFilterParams = {
+    goldBucket: goldBucketFilter || undefined,
     goldEcosystem: dGoldEcosystem || undefined,
     biome: dBiome || undefined,
     search: dSearch || undefined,
@@ -385,7 +424,46 @@ export default function GenomeCollectionsPage() {
     setCurrentPage(0);
   }
   const offset = (pagedUnder === filterSignature ? currentPage : 0) * pageSize;
-  const { data, isLoading, isFetching, error, hasLoaded: samplesLoaded } = useSamples({
+
+  // The page's ONE URL writer (see useMirrorToUrl). Text, select and range
+  // filters are mirrored DEBOUNCED, as they are sent, so the URL names the rows
+  // on screen rather than a half-typed word. Column widths and visibility,
+  // expanded rows and their tabs, open filter rows and the taxonomy rank stay
+  // out: they describe the display, not the result set.
+  useMirrorToUrl(
+    [
+      ['search', dSearch],
+      ['studyKey', studyKeyFilter],
+      ['goldBucket', goldBucketFilter],
+      ['id', dId],
+      ['goldEcosystem', dGoldEcosystem],
+      ['biome', dBiome],
+      ['study', dStudy],
+      ['dataSource', dDataSource],
+      ['genomeType', dGenomeType],
+      ['assembliesMin', dAsmMin],
+      ['assembliesMax', dAsmMax],
+      ['bgcsMin', dBgcMin],
+      ['bgcsMax', dBgcMax],
+      ['completenessMin', dComplMin],
+      ['completenessMax', dComplMax],
+      ['contaminationMin', dContamMin],
+      ['contaminationMax', dContamMax],
+      ['genomeQuality', dGenomeQuality],
+      ['latMin', bbox.latMin ?? ''],
+      ['latMax', bbox.latMax ?? ''],
+      ['lonMin', bbox.lonMin ?? ''],
+      ['lonMax', bbox.lonMax ?? ''],
+      ['sort', sortField, DEFAULT_SORT_FIELD],
+      ['order', sortOrder, DEFAULT_SORT_ORDER],
+      ['page', currentPage + 1, 1],
+      ['size', pageSize, DEFAULT_PAGE_SIZE],
+      ['display', viewMode === 'map' ? 'map' : ''],
+    ] satisfies UrlEntry[],
+    mounted,
+  );
+
+  const { data, isLoading, isFetching, error, hasLoaded: samplesLoaded, refetch } = useSamples({
     limit: pageSize, offset, ...genomeFilterParams,
   });
 
@@ -459,9 +537,17 @@ export default function GenomeCollectionsPage() {
     setColumnVisibility(prev => ({ ...prev, [columnId]: visible }));
   };
 
-  const samples = data?.data?.data || [];
-  const total = data?.data?.total || 0;
-  const totalPages = Math.ceil(total / pageSize);
+  // Nothing from a failed request reaches the table, the counts or the export:
+  // the error state below stands in for all of them.
+  const samples = error ? [] : (data?.data?.data || []);
+  const total = error ? 0 : (data?.data?.total || 0);
+
+  // Under a deep-page refusal the pager stays, at the last total the list
+  // reported, so the reader can step back; any other error hides it, where
+  // "Showing 1–0 of 0" would read as an empty result.
+  const pagerShown = !error || isDeepPageRefusal(error);
+  const pagerItems = useLastKnown(total, !error, JSON.stringify(genomeFilterParams));
+  const pagerPages = Math.ceil(pagerItems / pageSize);
   const statistics = statisticsData?.data || null;
 
   const getSampleSourceNames = (sample: Sample): string[] => {
@@ -741,19 +827,7 @@ export default function GenomeCollectionsPage() {
 
         return (
           <div className="max-w-full">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge
-                  variant="outline"
-                  className="text-xs max-w-full whitespace-normal h-auto"
-                >
-                  {displayName}
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[440px]">
-                <p className="text-xs leading-relaxed">{fullPath}</p>
-              </TooltipContent>
-            </Tooltip>
+            <TaxonomyBadge name={displayName} lineage={fullPath} className="text-xs" />
           </div>
         );
       }
@@ -763,7 +837,8 @@ export default function GenomeCollectionsPage() {
       label: 'GOLD Ecosystem',
       width: columnWidths.goldEcosystem,
       minWidth: 200,
-      sortable: true,
+      // Neither backend sorts by it (both fall back to # BGCs), so no arrow.
+      sortable: false,
       filterable: true,
       filterType: 'text' as const,
       visible: columnVisibility.goldEcosystem,
@@ -973,34 +1048,78 @@ export default function GenomeCollectionsPage() {
     );
   };
 
-  if (error) {
-    return (
-      <MainLayout>
-        <div className="w-full py-8">
-          <div className="border border-border bg-card py-12 text-center">
-            <h3 className="mb-2 text-base font-semibold text-destructive">
-              Error loading genome collections
-            </h3>
-            {/* The server's message: it names the field to repair when a filter is refused. */}
-            <p className="mx-auto max-w-prose text-sm text-muted-foreground">
-              {error.message}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => window.location.reload()}
-              className="mt-4"
-            >
-              Retry
-            </Button>
-          </div>
-        </div>
-      </MainLayout>
-    );
-  }
-
   const fmt = (value?: number | null): string =>
     statsLoading ? '—' : (value ?? 0).toLocaleString();
+
+  // Every active filter gets a chip, column filters included: a copied link can
+  // carry ?biome= or ?bgcsMin= while that filter row is closed, its column is
+  // hidden or the page is in map view, and nothing else on screen would say the
+  // table is narrowed. Values are the APPLIED ones (what the request sends), see
+  // appliedFilterValue. The study scope keeps its own StudyScopeChip above.
+  const ap = appliedFilterValue;
+  const filterChipsList: FilterChip[] = [
+    { key: 'search', label: 'Search', value: ap(searchTerm, dSearch), onRemove: () => setSearchTerm('') },
+    {
+      key: 'goldBucket',
+      label: 'Environment',
+      value: goldBucketFilter
+        ? goldBucketLabel(goldBucketFilter)
+        : '',
+      onRemove: () => setGoldBucketFilter(''),
+    },
+    { key: 'area', label: 'Area', value: hasBbox ? formatAreaLabel(bbox) : '', onRemove: () => setBbox({}) },
+    { key: 'id', label: 'Genome ID', value: ap(filterId, dId), onRemove: () => setFilterId('') },
+    {
+      key: 'genomeType',
+      label: 'Genome type',
+      value: ap(filterGenomeType, dGenomeType),
+      onRemove: () => setFilterGenomeType(''),
+    },
+    {
+      key: 'dataSource',
+      label: 'Data source',
+      value: ap(filterDataSource, dDataSource) && optionLabel(dataSourceOptions, dDataSource),
+      onRemove: () => setFilterDataSource(''),
+    },
+    {
+      key: 'assemblies',
+      label: 'Assemblies',
+      value: formatRangeLabel(ap(assembliesMin, dAsmMin), ap(assembliesMax, dAsmMax)),
+      onRemove: () => { setAssembliesMin(''); setAssembliesMax(''); },
+    },
+    {
+      key: 'bgcs',
+      label: 'BGCs',
+      value: formatRangeLabel(ap(bgcsMin, dBgcMin), ap(bgcsMax, dBgcMax)),
+      onRemove: () => { setBgcsMin(''); setBgcsMax(''); },
+    },
+    {
+      key: 'completeness',
+      label: 'Completeness',
+      value: formatRangeLabel(ap(completenessMin, dComplMin), ap(completenessMax, dComplMax), '%'),
+      onRemove: () => { setCompletenessMin(''); setCompletenessMax(''); },
+    },
+    {
+      key: 'contamination',
+      label: 'Contamination',
+      value: formatRangeLabel(ap(contaminationMin, dContamMin), ap(contaminationMax, dContamMax), '%'),
+      onRemove: () => { setContaminationMin(''); setContaminationMax(''); },
+    },
+    {
+      key: 'genomeQuality',
+      label: 'MIMAG',
+      value: ap(filterGenomeQuality, dGenomeQuality),
+      onRemove: () => setFilterGenomeQuality(''),
+    },
+    {
+      key: 'goldEcosystem',
+      label: 'GOLD Ecosystem',
+      value: ap(filterGoldEcosystem, dGoldEcosystem),
+      onRemove: () => setFilterGoldEcosystem(''),
+    },
+    { key: 'biome', label: 'Biome', value: ap(filterBiome, dBiome), onRemove: () => setFilterBiome('') },
+    { key: 'study', label: 'Study', value: ap(filterStudy, dStudy), onRemove: () => setFilterStudy('') },
+  ].filter((chip) => chip.value);
 
   return (
     <MainLayout>
@@ -1081,21 +1200,6 @@ export default function GenomeCollectionsPage() {
               />
             </div>
 
-            {hasBbox && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-xs text-primary">
-                <Map className="size-3" aria-hidden />
-                <span className="tabular-nums">{formatAreaLabel(bbox)}</span>
-                <button
-                  type="button"
-                  onClick={clearBbox}
-                  aria-label="Clear area filter"
-                  className="rounded-sm p-0.5 hover:bg-primary/10"
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
-            )}
-
             <CopyLinkButton className="ml-auto" />
 
             <div className="inline-flex rounded-sm border border-input">
@@ -1128,6 +1232,8 @@ export default function GenomeCollectionsPage() {
           </div>
         </section>
 
+        <FilterChips className="mb-6" filters={filterChipsList} onClearAll={clearAllFilters} />
+
         <section>
           <div className="mb-3 flex items-end justify-between gap-4 border-b border-border pb-2">
             <div>
@@ -1145,23 +1251,28 @@ export default function GenomeCollectionsPage() {
             </div>
           </div>
 
-          {viewMode === 'table' && !tableLoading && total > 0 && (
+          {viewMode === 'table' && pagerShown && !tableLoading && pagerItems > 0 && (
             <div className="mb-4">
               <Pagination
                 currentPage={currentPage}
-                totalPages={totalPages}
-                totalItems={total}
+                totalPages={pagerPages}
+                totalItems={pagerItems}
                 pageSize={pageSize}
                 offset={offset}
                 onPageChange={handlePageChange}
                 onPageSizeChange={handlePageSizeChange}
-                pageSizeOptions={[5, 10, 25, 50, 100]}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
               />
             </div>
           )}
 
           <div>
-            {viewMode === 'map' ? (
+            {viewMode === 'map' && error && isFilterRefusal(error) ? (
+              // The map reads the same filters. Shown in place of it, so a
+              // refused filter never leaves the static snapshot's unfiltered
+              // dots on screen as if they matched.
+              <ListErrorState error={error} noun="genome collections" onRetry={refetch} retrying={isFetching} />
+            ) : viewMode === 'map' ? (
               mapHasActiveFilters ? (
                 <SampleMapDots
                   showAreaSelect={false}
@@ -1176,6 +1287,14 @@ export default function GenomeCollectionsPage() {
                   staticManifestUrl="/data/map-genomes.manifest.json"
                 />
               )
+            ) : error ? (
+              <ListErrorState
+                error={error}
+                noun="genome collections"
+                onRetry={refetch}
+                retrying={isFetching}
+                onFirstPage={() => setCurrentPage(0)}
+              />
             ) : tableLoading ? (
               <div className="space-y-6">
                 <ColdLoadHint loading={tableLoading} label="Loading genomes" />
@@ -1291,17 +1410,17 @@ export default function GenomeCollectionsPage() {
           </div>
         </section>
 
-        {viewMode === 'table' && (
+        {viewMode === 'table' && pagerShown && (!error || pagerItems > 0) && (
           <div className="mt-6">
             <Pagination
               currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={total}
+              totalPages={pagerPages}
+              totalItems={pagerItems}
               pageSize={pageSize}
               offset={offset}
               onPageChange={handlePageChange}
               onPageSizeChange={handlePageSizeChange}
-              pageSizeOptions={[5, 10, 25, 50, 100]}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
             />
           </div>
         )}

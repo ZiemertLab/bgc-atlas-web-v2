@@ -93,3 +93,28 @@ function parseCsvRow(line: string): string[] {
   out.push(cur);
   return out;
 }
+
+describe('escapeDelimitedField: what a spreadsheet would run', () => {
+  it.each([
+    ['=HYPERLINK("http://x","y")', ','],
+    ['+cmd|calc', ','],
+    ['@SUM(A1)', ','],
+    ['-2+3', ','],
+    ['=1+1', '\t'],
+  ])('neutralises %j (separator %j) with a leading apostrophe', (value, separator) => {
+    const out = escapeDelimitedField(value, separator);
+    expect(out.replace(/^"/, '').startsWith("'")).toBe(true);
+  });
+
+  it('leaves numbers, negative ones included, and ordinary text alone', () => {
+    for (const v of ['-12.5', '-77', '1e-5', '-3.2E+4', '0', 'NRPS', 'GCF-v2b6-000042', 'd__Bacteria']) {
+      expect(escapeDelimitedField(v, ',')).toBe(v);
+    }
+    expect(escapeDelimitedField(-12.5, ',')).toBe('-12.5');
+  });
+
+  it('quotes a carriage return in CSV and flattens it in TSV', () => {
+    expect(escapeDelimitedField('a\rb', ',')).toBe('"a\rb"');
+    expect(escapeDelimitedField('a\rb\tc', '\t')).toBe('a b c');
+  });
+});

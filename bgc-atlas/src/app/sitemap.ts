@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import { readReleases } from "@/lib/releases/read";
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? "https://bgc-atlas.cs.uni-tuebingen.de";
@@ -33,10 +34,11 @@ const STATIC_ROUTES: MetadataRoute.Sitemap = [
   { url: ROUTE("/privacy"), changeFrequency: "yearly", priority: 0.2 },
 ];
 
+// Listed families only: unlisted singletons have no list entry. Returns 0 if the DB is unreachable.
 async function countGcfs(): Promise<number> {
   try {
     const rows = await prisma.$queryRaw<{ count: bigint }[]>(
-      Prisma.sql`SELECT COUNT(*)::bigint AS count FROM gcf_summary_mv`,
+      Prisma.sql`SELECT COUNT(*)::bigint AS count FROM gcfs WHERE listed`,
     );
     return Number(rows[0]?.count ?? 0);
   } catch {
@@ -49,10 +51,12 @@ async function gcfShardCount(): Promise<number> {
   return Math.ceil(total / CHUNK_SIZE);
 }
 
+// Studies with BGCs, one per study: `studies` holds several physical rows for one study.
+// Returns 0 if the DB is unreachable.
 async function countStudies(): Promise<number> {
   try {
     const rows = await prisma.$queryRaw<{ count: bigint }[]>(
-      Prisma.sql`SELECT COUNT(*)::bigint AS count FROM studies`,
+      Prisma.sql`SELECT COUNT(*)::bigint AS count FROM study_bgc_summary WHERE total_bgcs > 0`,
     );
     return Number(rows[0]?.count ?? 0);
   } catch {
@@ -82,7 +86,11 @@ export default async function sitemap({
 }: {
   id: number;
 }): Promise<MetadataRoute.Sitemap> {
-  const now = new Date();
+  // The data changes with a release, so the release date is the honest lastmod. It
+  // was the time of the request -- every URL "modified" on every fetch, which
+  // teaches a crawler to ignore the field. Undefined when no release is readable.
+  const releaseDate = (await readReleases()).latest?.date;
+  const now = releaseDate ? new Date(releaseDate) : undefined;
   // The shard id may arrive as a string.
   const shard = Number(id);
 
@@ -96,9 +104,10 @@ export default async function sitemap({
     const offset = (shard - 1) * CHUNK_SIZE;
     try {
       const rows = await prisma.$queryRaw<{ gcf_id: string }[]>(Prisma.sql`
-        SELECT gcf_id
-        FROM gcf_summary_mv
-        ORDER BY gcf_id
+        SELECT id::text AS gcf_id
+        FROM gcfs
+        WHERE listed
+        ORDER BY id
         LIMIT ${CHUNK_SIZE} OFFSET ${offset}
       `);
 
@@ -115,10 +124,12 @@ export default async function sitemap({
 
   const offset = (shard - gcfShards - 1) * CHUNK_SIZE;
   try {
+    // study_id is the study's canonical page; a physical id redirects to it.
     const rows = await prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
-      SELECT id::text AS id
-      FROM studies
-      ORDER BY id
+      SELECT study_id::text AS id
+      FROM study_bgc_summary
+      WHERE total_bgcs > 0
+      ORDER BY study_id
       LIMIT ${CHUNK_SIZE} OFFSET ${offset}
     `);
 

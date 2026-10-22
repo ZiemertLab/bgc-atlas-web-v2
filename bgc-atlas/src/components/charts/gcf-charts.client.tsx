@@ -435,8 +435,9 @@ export function GcfCharts({ onProductCategorySelect, staticManifestUrl, params, 
 
   const snapshot = useStatic ? (staticQuery.data ?? null) : liveQuery.data;
 
-  // Negative operators and biome/taxonomy/productClass conditions go to the SQL fallback, which
-  // the aggregation cannot reproduce; there the corpus snapshot stays, labelled as such.
+  // A condition the index cannot serve (an unknown field, or an operator the field does not
+  // offer) goes to the SQL fallback, which the aggregation cannot reproduce; there the corpus
+  // snapshot stays, labelled as such.
   const showingLive = filtered && !live.unsupported && !live.error && Boolean(live.data);
 
   const data: GcfStats | null = showingLive ? live.data! : snapshot;

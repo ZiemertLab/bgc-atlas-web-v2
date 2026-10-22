@@ -16,6 +16,12 @@ interface BiomeDistributionChartProps {
   formatLabel?: (key: string) => string;
   /** What the distribution is, for the aria-label. */
   ariaLabel?: string;
+  /** The denominator, after each percentage: "of members with an L3
+   *  ecosystem". A GOLD share is never of all members, so say which. */
+  valueLabel?: string;
+  /** A line under the tooltip's percentage, e.g. how many members have an
+   *  ecosystem at that level at all. */
+  footnote?: string;
 }
 
 // Module-level so the default keeps one identity: the draw effect depends on
@@ -38,6 +44,8 @@ function BiomeDistributionChartComponent({
   getColor = getEcosystemColor,
   formatLabel = identity,
   ariaLabel = 'GOLD ecosystem distribution',
+  valueLabel,
+  footnote,
 }: BiomeDistributionChartProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,7 +105,7 @@ function BiomeDistributionChartComponent({
           visible: true,
           x: rect.left + rect.width / 2,
           y: rect.top - 10,
-          content: `${formatLabel(biome)}: ${percentage.toFixed(1)}%`,
+          content: `${formatLabel(biome)}: ${percentage.toFixed(1)} %`,
           biome: formatLabel(biome),
           percentage,
         });
@@ -141,8 +149,8 @@ function BiomeDistributionChartComponent({
           width="100%"
           height={height}
           style={{ display: 'block' }}
-          aria-label={`${ariaLabel}: ${Object.entries(distribution)
-            .map(([key, pct]) => `${formatLabel(key)} ${pct.toFixed(1)}%`)
+          aria-label={`${ariaLabel}${valueLabel ? `, ${valueLabel}` : ''}: ${Object.entries(distribution)
+            .map(([key, pct]) => `${formatLabel(key)} ${pct.toFixed(1)} %`)
             .join(', ')}`}
         />
       </div>
@@ -156,7 +164,11 @@ function BiomeDistributionChartComponent({
           }}
         >
           <div className="font-medium">{tooltip.biome}</div>
-          <div className="text-xs">{tooltip.percentage.toFixed(1)}%</div>
+          <div className="text-xs font-mono tabular-nums">
+            {tooltip.percentage.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %
+            {valueLabel && <span className="font-sans"> {valueLabel}</span>}
+          </div>
+          {footnote && <div className="mt-0.5 text-xs text-muted-foreground">{footnote}</div>}
         </div>,
         document.body
       )}
@@ -171,7 +183,9 @@ export const BiomeDistributionChart = memo(
       JSON.stringify(prevProps.distribution) === JSON.stringify(nextProps.distribution) &&
       prevProps.height === nextProps.height &&
       prevProps.getColor === nextProps.getColor &&
-      prevProps.formatLabel === nextProps.formatLabel
+      prevProps.formatLabel === nextProps.formatLabel &&
+      prevProps.valueLabel === nextProps.valueLabel &&
+      prevProps.footnote === nextProps.footnote
     );
   }
 );

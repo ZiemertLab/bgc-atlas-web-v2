@@ -14,6 +14,8 @@ import { ResizableTable } from '@/components/ui/resizable-table';
 import type { TableColumn } from '@/components/ui/resizable-table/types';
 import { ProductCategoryChart } from '@/components/ui/product-category-chart';
 import { BiomeDistributionChart } from '@/components/ui/biome-distribution-chart';
+import { ecosystemColumnTooltip, ecosystemValueLabel } from '@/lib/gcf/share-display';
+import type { GcfListItem } from '@/lib/hooks/use-gcfs';
 import { TaxonomyDistributionChart } from '@/components/ui/taxonomy-distribution-chart';
 import { SampleMapDots } from '@/components/ui/sample-map-dots';
 import { useBigsliceMapSamples } from '@/lib/hooks/use-bigslice-map-samples';
@@ -105,21 +107,33 @@ function taxonomyForDisplay(gcf: HydratedGcf | null): Record<string, number> | u
   return gcf?.taxonomyDistribution;
 }
 
+/** A family's members with an L1 ecosystem: the base its L1 distribution is a
+ *  share of. All members where the document lacks the resolved share (absent,
+ *  not 0, from an index built before the ecosystem share fields). */
+function membersWithL1Ecosystem(gcf: HydratedGcf): number {
+  const members = gcf.memberBgcCount ?? 0;
+  const resolved = (gcf as Pick<GcfListItem, 'ecosystemResolvedPctByLevel'>).ecosystemResolvedPctByLevel?.[1];
+  return typeof resolved === 'number' && Number.isFinite(resolved) ? members * resolved / 100 : members;
+}
+
 function familyLabel(hit: BigSliceResult): string {
   return hit.gcfName ?? `GCF ${hit.bigsliceGcfId ?? '?'}`;
 }
 
 // Pools the matched families' distributions weighted by member BGC count, on the 0-100 scale.
 // Distributions sum to 100 per family, so multi-category BGCs are apportioned, not double-counted.
+// `weight` overrides that count: an ecosystem distribution is a share of the members WITH an
+// ecosystem at that level, so weighting it by memberBgcCount over-counts mostly unclassified families.
 function shareByBgcs(
   gcfs: HydratedGcf[],
   pick: (gcf: HydratedGcf) => Record<string, number> | undefined,
+  weight: (gcf: HydratedGcf) => number = (gcf) => gcf.memberBgcCount ?? 0,
 ): Record<string, number> {
   const totals = new Map<string, number>();
   let grandTotal = 0;
 
   for (const gcf of gcfs) {
-    const members = gcf.memberBgcCount ?? 0;
+    const members = weight(gcf);
     const distribution = pick(gcf);
     if (members <= 0 || !distribution) continue;
     for (const [label, pct] of Object.entries(distribution)) {
@@ -213,9 +227,22 @@ export function BigSliceResultsTable({ sessionId }: BigSliceResultsTableProps) {
 
   const summary = useMemo(() => ({
     categories: shareByBgcs(matchedFamilies, (gcf) => gcf.productCategoryDistribution),
-    ecosystems: shareByBgcs(matchedFamilies, (gcf) => gcf.biomeDistributionByLevel?.[1]),
+    // Weighted by the members with an L1 ecosystem, the distribution's own
+    // denominator; all members where the index does not carry the resolved share.
+    ecosystems: shareByBgcs(matchedFamilies, (gcf) => gcf.biomeDistributionByLevel?.[1], membersWithL1Ecosystem),
     taxonomy: shareByBgcs(matchedFamilies, taxonomyForDisplay),
   }), [matchedFamilies]);
+
+  /** The ecosystem bar's own base: members with an L1 ecosystem, from the same
+   *  weights, over the families that have an L1 distribution. Approximate, as
+   *  resolved_pct is stored to 2 dp. */
+  const ecosystemBase = useMemo(
+    () => Math.round(matchedFamilies.reduce((sum, gcf) => {
+      const distribution = gcf.biomeDistributionByLevel?.[1];
+      return distribution && Object.keys(distribution).length > 0 ? sum + membersWithL1Ecosystem(gcf) : sum;
+    }, 0)),
+    [matchedFamilies],
+  );
 
   /** BGCs across the matched families — what the summary bars are a share of. */
   const matchedBgcs = useMemo(
@@ -318,7 +345,7 @@ export function BigSliceResultsTable({ sessionId }: BigSliceResultsTableProps) {
       width: 205,
       minWidth: 140,
       sortable: false,
-      headerTooltip: 'The family’s members across GOLD ecosystem level 1.',
+      headerTooltip: ecosystemColumnTooltip(1),
       renderCell: (hit) => {
         const distribution = hit.gcf?.biomeDistributionByLevel?.[1];
         if (!distribution || Object.keys(distribution).length === 0) {
@@ -326,7 +353,7 @@ export function BigSliceResultsTable({ sessionId }: BigSliceResultsTableProps) {
         }
         return (
           <div className="w-full px-1">
-            <BiomeDistributionChart distribution={distribution} height={24} />
+            <BiomeDistributionChart distribution={distribution} height={24} valueLabel={ecosystemValueLabel(1)} />
           </div>
         );
       },
@@ -481,17 +508,24 @@ export function BigSliceResultsTable({ sessionId }: BigSliceResultsTableProps) {
         >
           <div className="space-y-4">
             <p className="text-[12.5px] text-muted-foreground">
-              Share of the {matchedBgcs.toLocaleString()} atlas BGCs in these families.
+              Category and taxonomy: share of the {matchedBgcs.toLocaleString()} atlas BGCs in these families.
             </p>
             {([
-              ['Category', summary.categories, ProductCategoryChart],
-              ['GOLD ecosystem (L1)', summary.ecosystems, BiomeDistributionChart],
-              ['Taxonomy (phylum)', summary.taxonomy, TaxonomyDistributionChart],
-            ] as const).map(([label, distribution, Chart]) =>
+              ['Category', summary.categories,
+                (d: Record<string, number>) => <ProductCategoryChart distribution={d} height={28} />, null],
+              ['GOLD ecosystem (L1)', summary.ecosystems,
+                (d: Record<string, number>) => (
+                  <BiomeDistributionChart distribution={d} height={28} valueLabel={ecosystemValueLabel(1)} />
+                ),
+                `Of the ~${ecosystemBase.toLocaleString()} members with an L1 ecosystem.`],
+              ['Taxonomy (phylum)', summary.taxonomy,
+                (d: Record<string, number>) => <TaxonomyDistributionChart distribution={d} height={28} />, null],
+            ] as const).map(([label, distribution, chart, note]) =>
               Object.keys(distribution).length > 0 ? (
                 <div key={label} className="space-y-1">
                   <div className="section-label">{label}</div>
-                  <Chart distribution={distribution} height={28} />
+                  {chart(distribution)}
+                  {note && <p className="text-[11px] text-muted-foreground">{note}</p>}
                 </div>
               ) : null,
             )}
@@ -514,7 +548,7 @@ export function BigSliceResultsTable({ sessionId }: BigSliceResultsTableProps) {
             </p>
           ) : (
             <div className="space-y-2">
-              <SampleMapDots samples={mapSamples.data?.data ?? []} height={460} />
+              <SampleMapDots samples={mapSamples.data?.data ?? []} height={460} showAreaSelect={false} />
               {/* Most of the corpus has no coordinates, so the dot count needs qualifying. */}
               <p className="text-[11px] text-muted-foreground">
                 {mapTotal.toLocaleString()} geolocated sample{mapTotal === 1 ? '' : 's'}, one dot

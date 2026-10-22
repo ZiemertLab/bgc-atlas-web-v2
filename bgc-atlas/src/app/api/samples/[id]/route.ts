@@ -5,6 +5,18 @@ import prisma from '@/lib/prisma';
 import { getOrSetCache } from '@/lib/cache';
 import { mapSampleRowToSample, type SampleRow } from '@/lib/api/samples-query';
 import { serverError } from '@/lib/api/errors';
+import { isValidUuid } from '@/lib/entity-loaders';
+
+function notFoundResponse() {
+  return NextResponse.json(
+    {
+      success: false,
+      error: 'Sample not found',
+      message: 'No sample exists with the provided id.',
+    },
+    { status: 404 }
+  );
+}
 
 export async function GET(_request: Request, context: { params: Promise<{ id?: string }> }) {
   const params = await context.params;
@@ -19,6 +31,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id?: s
       },
       { status: 400 }
     );
+  }
+
+  // Every sample id is a uuid. Anything else cannot match, so it is answered here
+  // rather than by a query: compared as text, the id defeated the uuid index and
+  // each unknown string scanned all of sample_summary.
+  if (!isValidUuid(sampleId)) {
+    return notFoundResponse();
   }
 
   try {
@@ -43,7 +62,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id?: s
                  s.genome_size, s.genome_quality
           FROM sample_summary sb
           JOIN samples s ON s.id = sb.id
-          WHERE sb.id::text = ${sampleId}
+          WHERE sb.id = ${sampleId}::uuid
           LIMIT 1
         `);
         const row = rows[0];
@@ -53,14 +72,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id?: s
     );
 
     if (!payload.sample) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Sample not found',
-          message: 'No sample exists with the provided id.',
-        },
-        { status: 404 }
-      );
+      return notFoundResponse();
     }
 
     return NextResponse.json(

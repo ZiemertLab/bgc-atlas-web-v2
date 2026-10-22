@@ -39,7 +39,15 @@ const buildQueryString = (params: Record<string, unknown>) => {
   return query ? `?${query}` : '';
 };
 
-const emptyResponse = (params: { limit?: number; offset?: number }): PaginatedResponse<Study> => ({
+/**
+ * `unlisted`: umbrella studies the unfiltered index counts but does not list
+ * (lib/studies/umbrella-studies); null under any search or filter.
+ */
+export type StudiesListResponse = PaginatedResponse<Study> & {
+  data: { unlisted?: number | null };
+};
+
+const emptyResponse = (params: { limit?: number; offset?: number }): StudiesListResponse => ({
   success: true,
   data: { data: [], total: 0, limit: params.limit ?? 0, offset: params.offset ?? 0 },
 });
@@ -51,14 +59,14 @@ export const studyExportPath = (params: UseStudiesParams): string => {
   return `/api/studies/export${buildQueryString(query as Record<string, unknown>)}`;
 };
 
-export function useStudies(params: UseStudiesParams = {}): HookResult<PaginatedResponse<Study>> {
+export function useStudies(params: UseStudiesParams = {}): HookResult<StudiesListResponse> {
   const { enabled = true, ...query } = params;
   const url = `/api/studies${buildQueryString(query as Record<string, unknown>)}`;
   const fallback = emptyResponse(query);
 
-  const result = useQuery<PaginatedResponse<Study>, Error>({
+  const result = useQuery<StudiesListResponse, Error>({
     queryKey: ['studies', 'list', query],
-    queryFn: ({ signal }) => apiGet<PaginatedResponse<Study>>(url, { signal }),
+    queryFn: ({ signal }) => apiGet<StudiesListResponse>(url, { signal }),
     placeholderData: keepPreviousData,
     staleTime: 60 * 1000,
     enabled,
@@ -134,6 +142,7 @@ export type StudyDetail = {
       primary_biome: string | null;
       gold_ecosystem_path: string | null;
       bgc_count: number | null;
+      source_types?: string[];
     }[];
   };
   environment_distribution: { biome: string | null; count: number }[];

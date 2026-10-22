@@ -46,6 +46,24 @@ const PANEL_TOP_INSET = 112;
 /** ... nor does its bottom reach the attribution. */
 const PANEL_BOTTOM_INSET = 28;
 
+/**
+ * `box` is the selection as list-page query parameters (latMin..lonMax and the
+ * legend's GOLD bucket); `inBox` the points inside it, for a page that must pick
+ * between /samples and /genome-collections by what was selected.
+ */
+export interface AreaLinks {
+  samples?: (box: URLSearchParams, inBox: FrontendMapSample[]) => string;
+  bgcs?: (box: URLSearchParams) => string;
+  /**
+   * For the map on /samples itself: apply the box to the page's own filters
+   * instead of navigating. A link to the route the reader is already on would
+   * remount the list as a fresh visit (see useMirrorToUrl) and drop every other
+   * filter on it. Takes precedence over `samples` when both are set. It receives
+   * only the box, not `inBox`: the page it serves needs no choice of list.
+   */
+  onViewSamples?: (box: URLSearchParams) => void;
+}
+
 interface DotsMapProps {
   height?: number;
   params?: UseMapSamplesParams;
@@ -60,6 +78,12 @@ interface DotsMapProps {
   staticManifestUrl?: string;
   /** The area control deep-links to /samples and /bgcs, so it is off on the genome-collections map. */
   showAreaSelect?: boolean;
+  /**
+   * Where the area-select buttons go. Omitted: the unscoped lists. A page about one
+   * family or study passes its own, keeping its subject in the link; a list that cannot
+   * be narrowed to that subject is left out rather than offered unscoped (see AreaLinks).
+   */
+  areaLinks?: AreaLinks;
   /** Replaces the block's default centred sizing, e.g. "w-full" inside a page column. */
   blockClassName?: string;
   /** Block width at which the legend becomes a right-hand rail. Measured on the block, not the
@@ -158,7 +182,7 @@ function pickDominant(buckets: Record<GoldBucket, number>): GoldBucket {
   return best;
 }
 
-export function DotsMap({ height = 800, params, staticManifestUrl, samples: providedSamples, showAreaSelect = true, fitToData, blockClassName, railAt = RAIL_MIN_BLOCK_WIDTH }: DotsMapProps) {
+export function DotsMap({ height = 800, params, staticManifestUrl, samples: providedSamples, showAreaSelect = true, areaLinks, fitToData, blockClassName, railAt = RAIL_MIN_BLOCK_WIDTH }: DotsMapProps) {
   const hasProvided = Array.isArray(providedSamples);
   // A map handed a subset opens on it; browse and snapshot maps stay global.
   const fitsToData = fitToData ?? hasProvided;
@@ -424,14 +448,30 @@ export function DotsMap({ height = 800, params, staticManifestUrl, samples: prov
     return p.toString();
   }, [carriedBucket]);
 
-  // router.push already prepends basePath; withBase() would double it.
-  const onViewSamples = useCallback((b: AreaBounds) => {
-    router.push(`/samples?${buildQuery(b)}`);
-  }, [router, buildQuery]);
+  // The points inside a box, under the active legend filter, as countInBounds counts them.
+  const pointsInBox = useCallback((b: AreaBounds) => allValid.filter((s) =>
+    (activeBuckets.size === 0 || activeBuckets.has(s.bucket))
+    && (s.latitude as number) >= b.latMin && (s.latitude as number) <= b.latMax
+    && (s.longitude as number) >= b.lonMin && (s.longitude as number) <= b.lonMax,
+  ), [allValid, activeBuckets]);
 
-  const onViewBgcs = useCallback((b: AreaBounds) => {
-    router.push(`/bgcs?${buildQuery(b)}`);
-  }, [router, buildQuery]);
+  // router.push already prepends basePath; withBase() would double it. Unscoped by
+  // default; a page's areaLinks replace them, and a button it leaves out is not shown.
+  const onViewSamples = useMemo(() => {
+    if (!areaLinks) return (b: AreaBounds) => router.push(`/samples?${buildQuery(b)}`);
+    const apply = areaLinks.onViewSamples;
+    if (apply) return (b: AreaBounds) => apply(new URLSearchParams(buildQuery(b)));
+    const link = areaLinks.samples;
+    return link
+      ? (b: AreaBounds) => router.push(link(new URLSearchParams(buildQuery(b)), pointsInBox(b)))
+      : undefined;
+  }, [areaLinks, router, buildQuery, pointsInBox]);
+
+  const onViewBgcs = useMemo(() => {
+    if (!areaLinks) return (b: AreaBounds) => router.push(`/bgcs?${buildQuery(b)}`);
+    const link = areaLinks.bgcs;
+    return link ? (b: AreaBounds) => router.push(link(new URLSearchParams(buildQuery(b)))) : undefined;
+  }, [areaLinks, router, buildQuery]);
 
   const handleBucketClick = (b: GoldBucket) => {
     setActiveBuckets((prev) => {
@@ -496,7 +536,7 @@ export function DotsMap({ height = 800, params, staticManifestUrl, samples: prov
                 attribution={BASEMAP_ATTRIBUTION}
               />
               {/* Area select first so the place-search dropdown paints above it: same z-index, DOM order wins. */}
-              {showAreaSelect ? (
+              {showAreaSelect && (onViewSamples || onViewBgcs) ? (
                 <MapAreaSelect
                   countInBounds={countInBounds}
                   onViewSamples={onViewSamples}

@@ -1,11 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The route reads its totals from the database; the test must not.
+vi.mock('@/lib/corpus-figures', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/corpus-figures')>()),
+  getCorpusFigures: async () => ({ bgcs: 1, families: 2, samples: 3, studies: 4, dataSources: 5 }),
+}));
+
 import { GET } from './route';
 import { API_ENDPOINTS } from '@/lib/api-catalog';
 import { bgcPropertyFilterFields } from '@/lib/filters/bgc-property-fields';
 import { ABSTRACT_STATES } from '@/lib/abstract-license';
 
 const render = async (): Promise<Record<string, unknown>> =>
-  (await GET().json()) as Record<string, unknown>;
+  (await (await GET()).json()) as Record<string, unknown>;
 
 const collectRefs = (doc: unknown): { at: string; ref: string }[] => {
   const found: { at: string; ref: string }[] = [];

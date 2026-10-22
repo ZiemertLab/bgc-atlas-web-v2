@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict YS1c0giVdwbesVv4iq0dw6Ckolbggc14gPMS70BjT0NfZFI4dHzN07wHANb2FGu
+\restrict JIOejF6tCN67R491eJyyNzZHXI5V6YcjXCKWFpSgxJfqpm1e4pfBKHNbjDhVJ2v
 
 -- Dumped from database version 18.6 (Ubuntu 18.6-1.pgdg22.04+2)
 -- Dumped by pg_dump version 18.6 (Ubuntu 18.6-1.pgdg22.04+2)
@@ -594,6 +594,20 @@ ALTER TABLE ONLY public.user_uploads
 
 
 --
+-- Name: assembly_bgc_counts_mv_assembly_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX assembly_bgc_counts_mv_assembly_id ON public.assembly_bgc_counts_mv USING btree (assembly_id);
+
+
+--
+-- Name: assembly_bgc_counts_mv_count_desc; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX assembly_bgc_counts_mv_count_desc ON public.assembly_bgc_counts_mv USING btree (bgc_count DESC, assembly_id);
+
+
+--
 -- Name: bgc_gcf_one_primary; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1063,10 +1077,10 @@ CREATE INDEX idx_bgcs_contig_trgm ON public.bgcs USING gin (contig public.gin_tr
 
 
 --
--- Name: idx_bgcs_filename; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_bgcs_filename_c; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_bgcs_filename ON public.bgcs USING btree (filename);
+CREATE INDEX idx_bgcs_filename_c ON public.bgcs USING btree (filename COLLATE "C");
 
 
 --
@@ -1273,6 +1287,111 @@ CREATE INDEX idx_gcf_distributions_mv_dom_phylum_pct ON public.gcf_distributions
 
 
 --
+-- Name: idx_gcf_distributions_mv_eco_l1_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l1_ge10 ON public.gcf_distributions_mv USING gin (eco_l1_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l1_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l1_ge50 ON public.gcf_distributions_mv USING gin (eco_l1_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l1_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l1_ge90 ON public.gcf_distributions_mv USING gin (eco_l1_ge90);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l2_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l2_ge10 ON public.gcf_distributions_mv USING gin (eco_l2_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l2_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l2_ge50 ON public.gcf_distributions_mv USING gin (eco_l2_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l2_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l2_ge90 ON public.gcf_distributions_mv USING gin (eco_l2_ge90);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l3_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l3_ge10 ON public.gcf_distributions_mv USING gin (eco_l3_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l3_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l3_ge50 ON public.gcf_distributions_mv USING gin (eco_l3_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l3_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l3_ge90 ON public.gcf_distributions_mv USING gin (eco_l3_ge90);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l4_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l4_ge10 ON public.gcf_distributions_mv USING gin (eco_l4_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l4_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l4_ge50 ON public.gcf_distributions_mv USING gin (eco_l4_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l4_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l4_ge90 ON public.gcf_distributions_mv USING gin (eco_l4_ge90);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l5_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l5_ge10 ON public.gcf_distributions_mv USING gin (eco_l5_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l5_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l5_ge50 ON public.gcf_distributions_mv USING gin (eco_l5_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_eco_l5_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_eco_l5_ge90 ON public.gcf_distributions_mv USING gin (eco_l5_ge90);
+
+
+--
 -- Name: idx_gcf_distributions_mv_gcf_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1284,6 +1403,27 @@ CREATE UNIQUE INDEX idx_gcf_distributions_mv_gcf_id ON public.gcf_distributions_
 --
 
 CREATE INDEX idx_gcf_distributions_mv_max_pct_l1 ON public.gcf_distributions_mv USING btree (max_pct_l1 DESC NULLS LAST);
+
+
+--
+-- Name: idx_gcf_distributions_mv_product_types_ge10; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_product_types_ge10 ON public.gcf_distributions_mv USING gin (product_types_ge10);
+
+
+--
+-- Name: idx_gcf_distributions_mv_product_types_ge50; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_product_types_ge50 ON public.gcf_distributions_mv USING gin (product_types_ge50);
+
+
+--
+-- Name: idx_gcf_distributions_mv_product_types_ge90; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_distributions_mv_product_types_ge90 ON public.gcf_distributions_mv USING gin (product_types_ge90);
 
 
 --
@@ -1399,6 +1539,13 @@ CREATE UNIQUE INDEX idx_gcf_length_stats_mv_id ON public.gcf_length_stats_mv USI
 
 
 --
+-- Name: idx_gcf_member_ecosystem_mv_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_gcf_member_ecosystem_mv_key ON public.gcf_member_ecosystem_mv USING btree (gcf_id, gold_ecosystem_path);
+
+
+--
 -- Name: idx_gcf_product_cat_dist_category; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1452,6 +1599,13 @@ CREATE INDEX idx_gcf_product_matrix_type ON public.gcf_product_type_matrix_mv US
 --
 
 CREATE UNIQUE INDEX idx_gcf_product_type_matrix_gcf_cat_type ON public.gcf_product_type_matrix_mv USING btree (gcf_id, product_category, product);
+
+
+--
+-- Name: idx_gcf_product_type_member_mv_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_gcf_product_type_member_mv_key ON public.gcf_product_type_member_mv USING btree (gcf_id, product);
 
 
 --
@@ -1592,6 +1746,13 @@ CREATE INDEX idx_gcf_summary_mv_product_categories ON public.gcf_summary_mv USIN
 --
 
 CREATE INDEX idx_gcf_summary_name_trgm ON public.gcf_summary_mv USING gin (gcf_name public.gin_trgm_ops);
+
+
+--
+-- Name: idx_gcf_taxonomy_counts_gcf_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_gcf_taxonomy_counts_gcf_id ON public.gcf_taxonomy_counts USING btree (gcf_id);
 
 
 --
@@ -2470,6 +2631,20 @@ CREATE INDEX sample_summary_primary_biome_idx ON public.sample_summary USING btr
 
 
 --
+-- Name: study_geo_mv_study_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX study_geo_mv_study_key ON public.study_geo_mv USING btree (study_key);
+
+
+--
+-- Name: study_map_points_mv_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX study_map_points_mv_key ON public.study_map_points_mv USING btree (study_key, parent_key);
+
+
+--
 -- Name: uq_biomes_envo_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2838,5 +3013,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE bgc_owner IN SCHEMA public GRANT SELECT ON TAB
 -- PostgreSQL database dump complete
 --
 
-\unrestrict YS1c0giVdwbesVv4iq0dw6Ckolbggc14gPMS70BjT0NfZFI4dHzN07wHANb2FGu
+\unrestrict JIOejF6tCN67R491eJyyNzZHXI5V6YcjXCKWFpSgxJfqpm1e4pfBKHNbjDhVJ2v
 

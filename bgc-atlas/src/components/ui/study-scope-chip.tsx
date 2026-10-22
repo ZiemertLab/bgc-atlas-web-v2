@@ -3,13 +3,14 @@
 import Link from 'next/link';
 
 import { useStudies } from '@/lib/hooks/use-studies';
+import { studyTitle } from '@/lib/utils/accession';
 
 // A ?studyKey= scope arrives by URL, so without this chip the table silently shows a fraction
 // of the corpus. Names the study by title, falling back like the study page's h1.
 export function StudyScopeChip({ studyKey, onClear }: { studyKey: string; onClear: () => void }) {
   const { data } = useStudies({ key: studyKey, limit: 1 });
   const study = data.data?.data?.[0];
-  const title = study ? study.title || study.study_name || study.study_key : studyKey;
+  const title = study ? studyTitle(study) : studyKey;
 
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2 text-[13px]">

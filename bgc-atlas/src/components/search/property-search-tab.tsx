@@ -1,21 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Search, Filter, ChevronDown, Clock, Download } from 'lucide-react';
-import { apiFetch, withBase } from '@/lib/basePath';
+import { Loader2, Search, Filter, ChevronDown, Download } from 'lucide-react';
+import { apiFetch } from '@/lib/basePath';
 import { PROPERTY_GBK_EXPORT_MAX_REGIONS } from '@/lib/gcf/export-limits';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
+import { GbkExportDialog } from '@/components/ui/gbk-export-dialog';
 import { toDelimited, toJsonRows } from '@/lib/opensearch/export-columns';
 import { storeJob } from '@/lib/utils/job-cookies';
 import { Pagination } from '@/components/ui/pagination';
@@ -33,9 +29,8 @@ import {
   deserializeFamilyScope, serializeFamilyScope, type FamilyScope,
 } from '@/lib/filters/family-scope-url';
 import { MAX_COHORTS } from '@/lib/opensearch/entity-paging';
-import {
-  conditionRow, groupToRows, rowsExpression, rowsHaveRules, rowsToGroup, type FilterRow,
-} from '@/lib/filters/rows';
+import { conditionRow, groupToRows, rowsExpression, rowsHaveRules, type FilterRow } from '@/lib/filters/rows';
+import { queryOf, setsFromScope, type PropertyEntity } from '@/lib/filters/property-query';
 import {
   bgcPropertyFilterFields, booleanFacetFields, booleanFacetLabel, defaultFacetFields,
   facetValueCondition,
@@ -45,7 +40,7 @@ import { getEcosystemChartColorHex } from '@/lib/utils/gold-parser';
 import { cn } from '@/lib/utils';
 import {
   createDefaultFilterGroup, createFilterCondition, deserializeFilterGroup,
-  hasFilterRules, serializeFilterGroup, type FilterCondition, type FilterGroup,
+  serializeFilterGroup, type FilterCondition, type FilterGroup,
 } from '@/lib/filters/types';
 
 interface FacetBucket { value: string; count: number; label?: string; }
@@ -75,32 +70,7 @@ const cond = (field: string, op: string, value: unknown) => createFilterConditio
 const mkGroup = (operator: 'AND' | 'OR', conditions: FilterCondition[], groups: FilterGroup[] = []): FilterGroup =>
   ({ ...createDefaultFilterGroup(), operator, conditions, groups });
 
-type Entity = 'bgcs' | 'gcfs' | 'samples';
-
-// Families with two or more member sets are a family-scope question (each set matched by at
-// least one member); otherwise the first set is a plain filter.
-function queryOf(entity: Entity, sets: FilterRow[][], labels: string[], minPurity: number,
-  describe: (c: FilterCondition) => string): { group: FilterGroup | null; scope: FamilyScope | null } {
-  const live = sets.filter(rowsHaveRules);
-  if (entity === 'gcfs' && live.length >= 2) {
-    const kept = sets.map((rows, i) => ({ rows, label: labels[i] ?? '' })).filter((x) => rowsHaveRules(x.rows));
-    return {
-      group: null,
-      scope: {
-        cohorts: kept.map((x) => rowsToGroup(x.rows)),
-        labels: kept.map((x) => x.label.trim() || rowsExpression(x.rows, describe).map((p) => p.value).join(' ')),
-        minPurity,
-      },
-    };
-  }
-  return { group: rowsHaveRules(sets[0] ?? []) ? rowsToGroup(sets[0]) : null, scope: null };
-}
-
-/** An old ?fam link: its base filter applied to every member, so it goes into each set. */
-const setsFromScope = (base: FilterGroup | null, scope: FamilyScope): FilterRow[][] =>
-  scope.cohorts.map((cohort) => groupToRows(base && hasFilterRules(base)
-    ? { ...createDefaultFilterGroup(), groups: [base, cohort] }
-    : cohort));
+type Entity = PropertyEntity;
 
 // Rebuilt on click so ids are unique. `entity` and `scope` are carried so an example restores
 // the whole question, not just its rows.
@@ -182,10 +152,7 @@ export function PropertySearchTab() {
   const [facets, setFacets] = useState<Record<string, FacetBucket[]>>({});
   const [facetsLoading, setFacetsLoading] = useState(false);
   const [showTable, setShowTable] = useState(true);
-  const [gbkStarting, setGbkStarting] = useState(false);
-  const [gbkError, setGbkError] = useState<string | null>(null);
   const [gbkDialogOpen, setGbkDialogOpen] = useState(false);
-  const [gbkEmail, setGbkEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   // The last-submitted query, so the charts follow the shown results rather than unsubmitted edits.
   const [searchedGroup, setSearchedGroup] = useState<FilterGroup | null>(null);
@@ -193,15 +160,33 @@ export function PropertySearchTab() {
   // 'bgcs' pages documents; the others group the matching BGC set.
   const [returnEntity, setReturnEntity] = useState<Entity>('bgcs');
   const [searchedScope, setSearchedScope] = useState<FamilyScope | null>(null);
+  const searchSeq = useRef(0);
+  const searchAbort = useRef<AbortController | null>(null);
 
   const describe = useDescribeCondition(bgcPropertyFilterFields);
-  const setRows = (index: number, rows: FilterRow[]) =>
+  const setRows = (index: number, rows: FilterRow[]) => {
     setSets((prev) => prev.map((r, i) => (i === index ? rows : r)));
+    // A name restored from ?fam describes the set as it was. Once the set is edited
+    // the header is derived from what it now asks; otherwise a reloaded or shared
+    // link kept "Latitude > 66.5" over a set that had become "> 70".
+    setSetLabels((prev) => (prev[index] ? prev.map((l, i) => (i === index ? '' : l)) : prev));
+  };
 
   // Set from the handler, not an effect: an effect would fire on mount and strip ?ret before restore ran.
   const changeReturnEntity = (next: Entity) => {
     setReturnEntity(next);
     if (next !== 'gcfs') setSets((prev) => prev.slice(0, 1));
+    // A family-scope answer cannot be regrouped: dropping the other sets changes the
+    // question. Showing it anyway listed every BGC or sample, because the scope
+    // search carries no plain filter. Cleared until Search runs the new question.
+    if (next !== 'gcfs' && searchedScope) {
+      searchSeq.current += 1;
+      searchAbort.current?.abort();
+      setResult(null);
+      setSearchedGroup(null);
+      setSearchedScope(null);
+      setLoading(false);
+    }
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     if (next === 'bgcs') params.delete('ret');
@@ -242,11 +227,39 @@ export function PropertySearchTab() {
     const s = opts.sort !== undefined ? opts.sort : sort;
     const size = opts.size ?? pageSize;
 
+    // Only the latest search may write its answer. Refine, sort and paging all call
+    // this while an earlier request can still be in flight, and the broader (older)
+    // query is usually the slower one, so it used to land last and overwrite the
+    // answer to the newer one.
+    const id = ++searchSeq.current;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
+
     setLoading(true);
     setError(null);
     if (typeof window !== 'undefined') {
       window.history.replaceState(null, '', `${window.location.pathname}?${queryParams(entity, q).toString()}`);
     }
+
+    const showAnswer = (data: SearchResult) => {
+      setResult(data);
+      setPage(nextPage);
+      // Charts aggregate over the exact submitted query (same as the table).
+      setSearchedGroup(q.group);
+      setSearchedScope(q.scope);
+      setSearchNonce((n) => n + 1);
+    };
+
+    // A family-scope question has no single BGC set behind it: EntityResults asks
+    // it, and the BGC panels are not shown. The BGC request this used to make
+    // carried no filter and answered for the whole corpus.
+    if (q.scope) {
+      showAnswer({ total: 0, hits: [], facets: {} });
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await apiFetch('/api/search/properties', {
         method: 'POST',
@@ -257,20 +270,19 @@ export function PropertySearchTab() {
           // Facet counts are fetched separately, when Refine opens.
           facetFields: [],
         }),
+        signal: controller.signal,
       });
       const data = await res.json();
+      if (id !== searchSeq.current) return;
       if (!res.ok) { setError(data.error || 'Search failed'); setResult(null); }
-      else {
-        setResult(data);
-        setPage(nextPage);
-        setSearchedGroup(q.group);
-        setSearchedScope(q.scope);
-        setSearchNonce((n) => n + 1);
-      }
+      else showAnswer(data);
     } catch (e) {
+      if (id !== searchSeq.current) return;
       setError(e instanceof Error ? e.message : 'Search failed');
       setResult(null);
-    } finally { setLoading(false); }
+    } finally {
+      if (id === searchSeq.current) setLoading(false);
+    }
   };
 
   // Asks the catalog for the field's operator: `in` on a boolean field is a 400.
@@ -325,12 +337,14 @@ export function PropertySearchTab() {
     setExporting(true);
     setError(null);
     try {
-      const effective = queryOf(returnEntity, sets, setLabels, minPurity, describe).group;
+      // The searched query, not the builder: the table, its count and this menu
+      // describe what was searched, and an edit since (or Clear) would otherwise
+      // export a different set -- the whole corpus, after Clear.
       const res = await apiFetch('/api/search/properties/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          group: effective,
+          group: searchedGroup,
           sort: sort ?? undefined,
           format,
         }),
@@ -352,52 +366,27 @@ export function PropertySearchTab() {
     }
   };
 
-  // Opens its own /exports/<id> page in a new tab: an export can run for hours.
-  const startGbkExport = (email?: string) => {
-    if (gbkStarting) return;
-    setGbkError(null);
-    // Opened before any await: after one it is no longer a user gesture and popup blockers stop it.
-    const tab = window.open(withBase('/exports/starting'), '_blank');
-    setGbkStarting(true);
-    void (async () => {
-      try {
-        const effective = queryOf(returnEntity, sets, setLabels, minPurity, describe).group;
-        const res = await apiFetch('/api/search/properties/export-gbk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            group: effective,
-            sort: sort ?? undefined,
-            email: email?.trim() || undefined,
-            searchHref: `/search${window.location.search}`,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.exportJobId) {
-          tab?.close();
-          setGbkError(data.error || 'Failed to start GBK export');
-          return;
-        }
-        const count = Number(data.count) || 0;
-        storeJob(String(data.exportJobId), 'export',
-          `GBK export · ${count.toLocaleString()} region${count === 1 ? '' : 's'}`);
-        window.dispatchEvent(new Event('bgc-jobs-updated'));
-        setGbkDialogOpen(false);
-        const href = withBase(`/exports/${data.exportJobId}`);
-        if (tab) {
-          tab.opener = null;
-          tab.location.href = href;
-        } else {
-          // Popup blocked anyway: the search is in the URL, so Back restores it.
-          window.location.href = href;
-        }
-      } catch (e) {
-        tab?.close();
-        setGbkError(e instanceof Error ? e.message : 'Failed to start GBK export');
-      } finally {
-        setGbkStarting(false);
-      }
-    })();
+  // GBK zip: a recorded export job (gcf_export_jobs, kind 'regions') with its own
+  // page, /exports/<id>; GbkExportDialog opens it in a new tab. Also kept under
+  // Recent Jobs.
+  const createGbkExport = async (email: string | undefined): Promise<string> => {
+    // The searched query, as for "All matching": the dialog states its count.
+    const res = await apiFetch('/api/search/properties/export-gbk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        group: searchedGroup,
+        sort: sort ?? undefined,
+        email,
+        searchHref: `/search${window.location.search}`,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.exportJobId) throw new Error(data.error || 'Failed to start GBK export');
+    const count = Number(data.count) || 0;
+    storeJob(String(data.exportJobId), 'export',
+      `GBK export · ${count.toLocaleString()} region${count === 1 ? '' : 's'}`);
+    return String(data.exportJobId);
   };
 
   // Values go to runSearch explicitly because the setState calls are not readable in this closure yet.
@@ -425,7 +414,9 @@ export function PropertySearchTab() {
   // Facets are fetched when Refine opens, not with every search: on a broad query they take ~6 s
   // against 0.3 s for the documents.
   useEffect(() => {
-    if (!showRefine || !result) return;
+    // A family-scope answer has no single BGC set to facet (searchedGroup is null,
+    // which would count the whole corpus).
+    if (!showRefine || !result || searchedScope) return;
     let cancelled = false;
     setFacetsLoading(true);
     apiFetch('/api/search/properties', {
@@ -585,7 +576,7 @@ export function PropertySearchTab() {
       )}
 
       {result && (
-        <div className={cn('grid grid-cols-1 gap-6', showRefine && 'lg:grid-cols-[1fr_260px]')}>
+        <div className={cn('grid grid-cols-1 gap-6', showRefine && !searchedScope && 'lg:grid-cols-[1fr_260px]')}>
           <div className="min-w-0 space-y-3">
             {returnEntity !== 'bgcs' ? (
               <EntityResults group={searchedGroup} entity={returnEntity} nonce={searchNonce}
@@ -629,7 +620,7 @@ export function PropertySearchTab() {
                   <DropdownMenuItem onClick={() => downloadAll('json')}>JSON</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel className="text-xs">Region files</DropdownMenuLabel>
-                  <DropdownMenuItem onClick={() => { setGbkError(null); setGbkDialogOpen(true); }}>
+                  <DropdownMenuItem onClick={() => setGbkDialogOpen(true)}>
                     GBK archive (.zip, max {PROPERTY_GBK_EXPORT_MAX_REGIONS.toLocaleString()} regions)
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -671,19 +662,25 @@ export function PropertySearchTab() {
             )}
 
             {/* The panels always describe the matching BGCs, whatever Return is set to. */}
-            {returnEntity !== 'bgcs' && (
+            {returnEntity !== 'bgcs' && !searchedScope && (
               <p className="text-xs text-muted-foreground">
                 The panels below describe the {result.total.toLocaleString()} matching
                 BGC{result.total === 1 ? '' : 's'}, not the grouped {returnEntity === 'gcfs' ? 'GCFs' : 'samples'}.
               </p>
             )}
 
-            <DistributionPanel group={searchedGroup} total={result.total} nonce={searchNonce} onAddFilter={addCondition} />
+            {/* A family-scope answer has no one BGC set to describe; these used to
+                chart the whole corpus under it. */}
+            {!searchedScope && (
+              <>
+                <DistributionPanel group={searchedGroup} total={result.total} nonce={searchNonce} onAddFilter={addCondition} />
 
-            <GeoPanel group={searchedGroup} total={result.total} nonce={searchNonce} />
+                <GeoPanel group={searchedGroup} total={result.total} nonce={searchNonce} />
+              </>
+            )}
           </div>
 
-          {showRefine && (
+          {showRefine && !searchedScope && (
           <aside className="space-y-4">
             <div className="flex items-center gap-2 text-sm font-medium"><Filter className="h-4 w-4" /> Refine</div>
             {facetsLoading && (
@@ -722,45 +719,19 @@ export function PropertySearchTab() {
         </div>
       )}
 
-      <Dialog open={gbkDialogOpen} onOpenChange={setGbkDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Download region GBK files</DialogTitle>
-            <DialogDescription>
-              Packages the region GenBank (.gbk) files of{' '}
-              {result && result.total > PROPERTY_GBK_EXPORT_MAX_REGIONS
-                ? <>the first {PROPERTY_GBK_EXPORT_MAX_REGIONS.toLocaleString()} of the {result.total.toLocaleString()} matching BGCs, in the current sort order,</>
-                : <>the {(result?.total ?? 0).toLocaleString()} matching BGC{result?.total === 1 ? '' : 's'}</>}
-              {' '}into a zip.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex gap-2.5 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm">
-            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
-            <p>
-              <span className="font-medium">Large exports can take up to an hour.</span>{' '}
-              <span className="text-muted-foreground">
-                The job page opens in a new tab and the export keeps running if you close it.
-                It stays under Recent Jobs; leave an email to be told when it&apos;s ready.
-              </span>
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="gbk-email" className="text-xs">Email (optional)</Label>
-            <Input id="gbk-email" type="email" placeholder="you@example.com"
-              value={gbkEmail} onChange={(e) => setGbkEmail(e.target.value)} className="h-9" />
-          </div>
-          {gbkError && <p className="text-sm text-destructive">{gbkError}</p>}
-          <DialogFooter className="gap-2 sm:gap-2">
-            <Button variant="outline" onClick={() => setGbkDialogOpen(false)}>Cancel</Button>
-            <Button onClick={() => startGbkExport(gbkEmail)} disabled={gbkStarting}>
-              {gbkStarting
-                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                : <Download className="mr-2 h-4 w-4" />}
-              Start export
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <GbkExportDialog
+        open={gbkDialogOpen}
+        onOpenChange={setGbkDialogOpen}
+        title="Download region GBK files"
+        description={<>
+          Packages the region GenBank (.gbk) files of{' '}
+          {result && result.total > PROPERTY_GBK_EXPORT_MAX_REGIONS
+            ? <>the first {PROPERTY_GBK_EXPORT_MAX_REGIONS.toLocaleString()} of the {result.total.toLocaleString()} matching BGCs, in the current sort order,</>
+            : <>the {(result?.total ?? 0).toLocaleString()} matching BGC{result?.total === 1 ? '' : 's'}</>}
+          {' '}into a zip.
+        </>}
+        createJob={createGbkExport}
+      />
     </div>
   );
 }

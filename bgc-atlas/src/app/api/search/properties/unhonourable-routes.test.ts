@@ -178,13 +178,13 @@ describe('/aggregate refuses to chart a widened set', () => {
     const thirteen = [
       'product', 'product_category', 'is_complete', 'sample_type', 'biome',
       'gold_ecosystem', 'pfam', 'substrates', 'ripp_class', 'tax_phylum',
-      'tax_genus', 'length', 'gc_content',
+      'tax_genus', 'length', 'num_cds_features',
     ];
     const { status, json } = await post('aggregate', { group: null, fields: thirteen });
     expect(status).toBe(200);
     expect(json?.results).toHaveLength(MAX_DISTRIBUTION_FIELDS);
     // Truncation is stated, not left as an absence the panel would spin on.
-    expect(json?.omittedFields).toEqual(['gc_content']);
+    expect(json?.omittedFields).toEqual(['num_cds_features']);
   });
 
   it('asks nothing when no fields are requested', async () => {
@@ -235,6 +235,13 @@ describe('/geo refuses to map a widened set', () => {
 
   it('400s for the mappable-count shortcut', async () => {
     const { status, json } = await post('geo', { group: BAD, countOnly: true });
+    expect(status).toBe(400);
+    namesTheCondition(json);
+    expect(osRequests).toEqual([]);
+  });
+
+  it('400s for the per-sample map', async () => {
+    const { status, json } = await post('geo', { group: BAD, samples: true });
     expect(status).toBe(400);
     namesTheCondition(json);
     expect(osRequests).toEqual([]);

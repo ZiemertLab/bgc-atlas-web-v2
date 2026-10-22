@@ -28,6 +28,20 @@ type AssemblyRow = SampleRow & {
   antismash_run_id: string | null;
 };
 
+// Per-assembly BGC count, precomputed in assembly_bgc_counts_mv. A correlated
+// COUNT(*) over bgcs per filtered assembly never finished on an unfiltered
+// request. An assembly with no BGCs has no row there, hence COALESCE. As fresh as
+// the last refresh, like sample_summary, which supplies the rest of the row.
+const ASSEMBLY_COUNT_JOIN = Prisma.sql`LEFT JOIN assembly_bgc_counts_mv abc ON abc.assembly_id = a.id`;
+const ASSEMBLY_BGC_COUNT = Prisma.sql`COALESCE(abc.bgc_count, 0)::int AS assembly_bgc_count`;
+
+// Every column sortFieldMap reads, carried through the narrow `page` sort in
+// fetchData. A sort expression naming a column missing here fails as SQL, so
+// add it here when adding a sort.
+const SORT_COLUMNS = Prisma.sql`sb.geographic_location, sb.geolocation_name, sb.primary_biome,
+  sb.environment_biome, sb.environment_material, sb.environment_feature,
+  sb.host_scientific_name, sb.host_taxid`;
+
 // Outer-query sort: the inner DISTINCT ON must order by a.id first, so sorting
 // happens outside, by output column names (no `sb.` prefix).
 const sortFieldMap: Record<string, Prisma.Sql> = {
@@ -45,7 +59,10 @@ function buildOuterOrderClause(params: URLSearchParams) {
   const sortOrderParam = params.get('sortOrder') === 'asc' ? 'asc' : 'desc';
   const sortColumn = Object.hasOwn(sortFieldMap, sortFieldParam) ? sortFieldMap[sortFieldParam] : sortFieldMap.bgcs;
   const direction = sortOrderParam === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`;
-  return Prisma.sql`ORDER BY ${sortColumn} ${direction}`;
+  // assembly_id breaks ties: most assemblies hold 0-5 BGCs, so without it the
+  // order inside a tie was arbitrary and consecutive pages repeated some
+  // assemblies and skipped others.
+  return Prisma.sql`ORDER BY ${sortColumn} ${direction}, assembly_id ASC`;
 }
 
 export async function GET(request: Request) {
@@ -99,22 +116,28 @@ export async function GET(request: Request) {
 
   const outerOrderClause = buildOuterOrderClause(params);
 
-  const { dataKey, countKey } = buildListCacheKeys('assemblies:list', params, [
+  // v2: rows are now ordered with an assembly_id tiebreak, so a v1 page could
+  // overlap or miss rows of a v2 page beside it.
+  const { dataKey, countKey } = buildListCacheKeys('assemblies:list:v2', params, [
     'limit', 'offset', 'sortField', 'sortOrder', 'sortFields', 'sortOrders',
   ]);
 
   const fetchTotal = async (): Promise<number> => {
+    // The count join is made only when the per-assembly bgcs bounds are set: it
+    // feeds nothing else.
+    const countJoin = outerBgcsConditions.length ? ASSEMBLY_COUNT_JOIN : Prisma.sql``;
+    const countColumn = outerBgcsConditions.length ? Prisma.sql`, ${ASSEMBLY_BGC_COUNT}` : Prisma.sql``;
     const countResult = await prisma.$queryRaw<{ total: number }[]>(Prisma.sql`
       SELECT COUNT(*)::int AS total
       FROM (
         SELECT DISTINCT ON (a.id)
-          a.id,
-          (SELECT COUNT(*) FROM bgcs b WHERE b.assembly = a.id)::int AS assembly_bgc_count
+          a.id${countColumn}
         FROM assemblies a
         JOIN sample_assemblies sa ON sa.assembly_id = a.id
         JOIN sample_summary sb     ON sb.id = sa.sample_id
         -- gcfsMin/gcfsMax from the shared samples filter builders reference sgc.
         LEFT JOIN sample_gcf_counts_mv sgc ON sgc.sample_id = sb.id
+        ${countJoin}
         ${whereClause}
         ORDER BY a.id
       ) t
@@ -124,34 +147,48 @@ export async function GET(request: Request) {
   };
 
   const fetchData = async () => {
-    // assembly_bgc_count is computed inside because it's needed before LIMIT; the
-    // antismash-run lookup is outside so it runs only for the returned rows.
+    // Narrow first, wide second: the `page` CTE sorts only ids, the count and the
+    // sort columns over every matching assembly, and the wide sample_summary row
+    // is joined for the returned rows only (carrying it through the sort spilled
+    // to temp and took seconds). The antismash-run lookup is likewise made only
+    // for the returned rows.
     const rows = await prisma.$queryRaw<AssemblyRow[]>(Prisma.sql`
+      WITH page AS (
+        SELECT t.assembly_id, t.sample_id, t.assembly_bgc_count
+        FROM (
+          SELECT DISTINCT ON (a.id)
+            a.id  AS assembly_id,
+            sb.id AS sample_id,
+            ${ASSEMBLY_BGC_COUNT},
+            ${SORT_COLUMNS}
+          FROM assemblies a
+          JOIN sample_assemblies sa ON sa.assembly_id = a.id
+          JOIN sample_summary sb     ON sb.id = sa.sample_id
+          -- gcfsMin/gcfsMax from the shared samples filter builders reference sgc.
+          LEFT JOIN sample_gcf_counts_mv sgc ON sgc.sample_id = sb.id
+          ${ASSEMBLY_COUNT_JOIN}
+          ${whereClause}
+          ORDER BY a.id
+        ) t
+        ${outerWhereClause}
+        ${outerOrderClause}
+        LIMIT ${limit}
+        OFFSET ${offset}
+      )
       SELECT
-        t.*,
+        sb.*,
+        p.assembly_id,
+        a.external_id AS assembly_external_id,
+        a.name        AS assembly_name,
+        p.assembly_bgc_count,
         (SELECT ar.id FROM antismash_runs ar
-           WHERE ar.assembly_id = t.assembly_id
+           WHERE ar.assembly_id = p.assembly_id
            ORDER BY ar.created_at DESC NULLS LAST
            LIMIT 1) AS antismash_run_id
-      FROM (
-        SELECT DISTINCT ON (a.id)
-          sb.*,
-          a.id            AS assembly_id,
-          a.external_id   AS assembly_external_id,
-          a.name          AS assembly_name,
-          (SELECT COUNT(*) FROM bgcs b WHERE b.assembly = a.id)::int AS assembly_bgc_count
-        FROM assemblies a
-        JOIN sample_assemblies sa ON sa.assembly_id = a.id
-        JOIN sample_summary sb     ON sb.id = sa.sample_id
-        -- gcfsMin/gcfsMax from the shared samples filter builders reference sgc.
-        LEFT JOIN sample_gcf_counts_mv sgc ON sgc.sample_id = sb.id
-        ${whereClause}
-        ORDER BY a.id
-      ) t
-      ${outerWhereClause}
+      FROM page p
+      JOIN sample_summary sb ON sb.id = p.sample_id
+      JOIN assemblies a      ON a.id = p.assembly_id
       ${outerOrderClause}
-      LIMIT ${limit}
-      OFFSET ${offset}
     `);
     return rows.map((row) => {
       const sample = mapSampleRowToSample(row);

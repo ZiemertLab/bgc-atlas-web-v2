@@ -1,10 +1,14 @@
 import { API_ENDPOINTS, type ApiEndpoint, type ApiParam } from '@/lib/api-catalog';
+import { fillFiguresDeep, getCorpusFigures, millions, type CorpusFigures } from '@/lib/corpus-figures';
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? 'https://bgc-atlas.cs.uni-tuebingen.de';
 
-// Rendered from lib/api-catalog.ts, the same source as /openapi.json.
-export const dynamic = 'force-static';
+// The companion to /llms.txt: every documented endpoint with its parameters.
+// Rendered from lib/api-catalog.ts, the same source /openapi.json renders from,
+// with the catalog's {bgcs}-style totals filled from the database. Rebuilt at
+// most hourly.
+export const revalidate = 3600;
 
 // Array params are read with getAll; a reader sending a comma-joined list would silently match nothing.
 const typeLabel = (p: ApiParam) =>
@@ -35,7 +39,7 @@ function render(endpoint: ApiEndpoint): string {
   return lines.join('\n');
 }
 
-const body = `# BGC Atlas — full API reference
+const body = (f: CorpusFigures) => `# BGC Atlas — full API reference
 
 Companion to ${SITE_URL}/llms.txt, which has the entity model, the caveats that
 matter when reading these numbers, the licence and the citations. Read that
@@ -47,8 +51,13 @@ Machine-readable equivalent: ${SITE_URL}/openapi.json
 
 - Base URL: ${SITE_URL}
 - No authentication and no API key.
-- Almost every response is \`{ success: boolean, data: ... }\`, and an error adds
-  \`error\` and \`message\`. The two \`/api/search/properties\` endpoints predate
+- Almost every response is \`{ success: boolean, data: ... }\`. An error is
+  \`{ success: false, error }\`, plus a \`reference\` to quote to us when the
+  fault is on our side (a 5xx). A refused request is a 400 whose \`code\` says
+  why: \`filter_refused\` (a filter value the server cannot honour, named in
+  \`rejected\`) or \`deep_page\` (an offset too deep to serve; narrow the
+  filters or sort the other way). A 400 without a \`code\` is still possible.
+  The two \`/api/search/properties\` endpoints predate
   that envelope and return their own shape; each says so below.
 - List endpoints nest their page inside \`data\`:
   \`{ success, data: { data: [...], total, limit, offset } }\`.
@@ -59,7 +68,7 @@ Machine-readable equivalent: ${SITE_URL}/openapi.json
 
 ## Using it well
 
-- **Narrow before you page.** \`/api/bgcs\` sits on 16.4 million rows; a deep
+- **Narrow before you page.** \`/api/bgcs\` sits on ${millions(f.bgcs)} rows; a deep
   offset with no filter is slow for you and expensive for the server. Filter by
   family, sample or assembly first.
 - **For whole-database work, take the bulk export** at ${SITE_URL}/downloads
@@ -76,7 +85,8 @@ Machine-readable equivalent: ${SITE_URL}/openapi.json
 - \`completeness\` — whether a region runs off the end of its contig. An
   incomplete region is a fragment, not a short cluster.
 - \`petName\` — the two-word alias for a family; display only, never an identifier.
-- \`mibigAnchored\` — the family is named after a characterized MIBiG compound.
+- \`mibigAnchored\` — a characterized MIBiG reference cluster is a member of the
+  family; \`mibigCompounds\` names what it makes.
 - \`familyClass\` — \`seed\` (clustered from complete or median-length BGCs) or
   \`fragmented\` (clustered from what the seed could not place).
 - \`knownCluster\` — a KnownClusterBLAST compound that speaks for the family, with
@@ -86,11 +96,11 @@ Machine-readable equivalent: ${SITE_URL}/openapi.json
 
 ## Endpoints
 
-${API_ENDPOINTS.map(render).join('\n\n')}
+${fillFiguresDeep(API_ENDPOINTS, f).map(render).join('\n\n')}
 `;
 
-export function GET() {
-  return new Response(body, {
+export async function GET() {
+  return new Response(body(await getCorpusFigures()), {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'public, max-age=3600',

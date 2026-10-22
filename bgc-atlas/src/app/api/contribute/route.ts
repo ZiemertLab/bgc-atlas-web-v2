@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
-import { createWriteStream } from 'node:fs';
-import { mkdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { buildMailTransport } from '@/lib/mail/transport';
-import { Prisma, PrismaClient } from '@prisma/client';
-import { parseAndValidateCsv } from '@/lib/metadata/validation';
+import { isSingleEmailAddress } from '@/lib/mail/address';
+import { Prisma } from '@prisma/client';
+import prisma from '@/lib/prisma';
+import {
+  assembliesForSample, decodeMetadataBytes, metadataProblems, parseAndValidateCsv,
+} from '@/lib/metadata/validation';
 import { contributeRateLimit, getClientIp, checkRateLimit } from '@/lib/rate-limit';
 import {
   CONTRIBUTE_ASSEMBLY_MAX_BYTES,
@@ -13,17 +16,16 @@ import {
   CONTRIBUTE_METADATA_MAX_BYTES,
   CONTRIBUTE_REQUEST_MAX_BYTES,
 } from '@/lib/contribute/limits';
-import { serverError, UserFacingError } from '@/lib/api/errors';
+import { serverError } from '@/lib/api/errors';
+import { receiveMultipart, type FilePolicy, type ReceivedUpload } from '@/lib/contribute/multipart';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const prisma = new PrismaClient();
 
 // nginx caps the request at 500 MB (see lib/contribute/limits.ts).
 const MAX_ASSEMBLY_FILES = CONTRIBUTE_MAX_ASSEMBLY_FILES;
 const MAX_ASSEMBLY_FILE_BYTES = CONTRIBUTE_ASSEMBLY_MAX_BYTES;
-const MAX_ASSEMBLY_TOTAL_BYTES = CONTRIBUTE_ASSEMBLY_MAX_BYTES;
 const MAX_METADATA_FILE_BYTES = CONTRIBUTE_METADATA_MAX_BYTES;
 const MAX_CONTRIBUTION_REQUEST_BYTES = CONTRIBUTE_REQUEST_MAX_BYTES;
 
@@ -53,10 +55,16 @@ const sanitizeFilename = (name: string) => {
   return base.replace(/[^a-zA-Z0-9._-]/g, '_');
 };
 
-const toStringValue = (value: FormDataEntryValue | null) =>
-  typeof value === 'string' ? value.trim() : value instanceof File ? value.name : '';
-
 const REQUIRED_FIELDS = ['name', 'institute', 'email', 'description'] as const;
+
+/**
+ * Uploads received at once, per server process. The body is streamed to disk
+ * (lib/contribute/multipart.ts), so this no longer bounds memory -- request.formData()
+ * held up to nginx's 500 MB per upload -- but it still bounds concurrent writes
+ * to the uploads volume from one form nobody submits twice a day.
+ */
+const MAX_CONCURRENT_UPLOADS = 2;
+let uploadsInFlight = 0;
 const ASSEMBLY_EXTENSION_RE = /\.(fa|fna|fasta|fas|faa)(\.gz)?$/i;
 const METADATA_EXTENSION_RE = /\.(csv|tsv|txt|tab)$/i;
 
@@ -129,103 +137,80 @@ const validateRequestEnvelope = (request: Request) => {
   return null;
 };
 
-const validateAssemblyFiles = (files: File[]) => {
-  if (files.length > MAX_ASSEMBLY_FILES) {
-    return `Too many assembly files (${files.length}). Submit one assembly file per contribution.`;
+const checkAssembly = (filename: string, mimeType: string) => {
+  if (!ASSEMBLY_EXTENSION_RE.test(filename)) {
+    return `Assembly file '${filename}' must be FASTA (.fa, .fna, .fasta, .fas, .faa) with optional .gz compression.`;
   }
-
-  let totalBytes = 0;
-  for (const file of files) {
-    if (file.size === 0) continue;
-    const filename = file.name || 'assembly';
-    totalBytes += file.size;
-
-    if (file.size > MAX_ASSEMBLY_FILE_BYTES) {
-      return `Assembly file '${filename}' is too large. Maximum per-file size is ${formatBytes(MAX_ASSEMBLY_FILE_BYTES)}.`;
-    }
-    if (!ASSEMBLY_EXTENSION_RE.test(filename)) {
-      return `Assembly file '${filename}' must be FASTA (.fa, .fna, .fasta, .fas, .faa) with optional .gz compression.`;
-    }
-    if (!ALLOWED_ASSEMBLY_TYPES.has(file.type)) {
-      return `Assembly file '${filename}' has unsupported content type '${file.type}'.`;
-    }
+  if (!ALLOWED_ASSEMBLY_TYPES.has(mimeType)) {
+    return `Assembly file '${filename}' has unsupported content type '${mimeType}'.`;
   }
-
-  if (totalBytes > MAX_ASSEMBLY_TOTAL_BYTES) {
-    return `Assembly uploads are too large. Maximum total assembly size is ${formatBytes(MAX_ASSEMBLY_TOTAL_BYTES)}.`;
-  }
-
   return null;
 };
 
-const validateMetadataFile = (file: File | null) => {
-  if (!file || file.size === 0) return null;
-  const filename = file.name || 'metadata';
-
-  if (file.size > MAX_METADATA_FILE_BYTES) {
-    return `Metadata file '${filename}' is too large. Maximum metadata size is ${formatBytes(MAX_METADATA_FILE_BYTES)}.`;
-  }
+const checkMetadata = (filename: string, mimeType: string) => {
   if (!METADATA_EXTENSION_RE.test(filename)) {
     return `Metadata file '${filename}' must be CSV, TSV, TXT, or TAB.`;
   }
-  if (!ALLOWED_METADATA_TYPES.has(file.type)) {
-    return `Metadata file '${filename}' has unsupported content type '${file.type}'.`;
+  if (!ALLOWED_METADATA_TYPES.has(mimeType)) {
+    return `Metadata file '${filename}' has unsupported content type '${mimeType}'.`;
   }
-
   return null;
 };
 
-const writeFileChunk = async (stream: ReturnType<typeof createWriteStream>, chunk: Uint8Array) => {
-  const buffer = Buffer.from(chunk);
-  if (!stream.write(buffer)) {
-    await new Promise<void>((resolve, reject) => {
-      stream.once('drain', resolve);
-      stream.once('error', reject);
-    });
+const UPLOAD_POLICIES: Record<string, FilePolicy> = {
+  assemblies: {
+    maxCount: MAX_ASSEMBLY_FILES,
+    tooMany: (count) => `Too many assembly files (${count}). Submit one assembly file per contribution.`,
+    maxBytes: MAX_ASSEMBLY_FILE_BYTES,
+    check: checkAssembly,
+    tooLarge: (filename) =>
+      `Assembly file '${filename}' is too large. Maximum per-file size is ${formatBytes(MAX_ASSEMBLY_FILE_BYTES)}.`,
+  },
+  metadata: {
+    maxCount: 1,
+    tooMany: () => 'Submit one metadata file per contribution.',
+    maxBytes: MAX_METADATA_FILE_BYTES,
+    check: checkMetadata,
+    tooLarge: (filename) =>
+      `Metadata file '${filename}' is too large. Maximum metadata size is ${formatBytes(MAX_METADATA_FILE_BYTES)}.`,
+    keepContent: true,
+  },
+};
+
+// The acknowledgement is sent to this address, so it must be one address: a
+// list here made the form a mail relay under the atlas From address.
+const SINGLE_ADDRESS_ERROR = 'Please enter a single valid email address.';
+
+/**
+ * The contact fields' column widths (varchar(255)). Checked before the upload is
+ * stored: the database refused a longer name only after a 490 MB file had arrived,
+ * and the route then deleted it.
+ */
+const FIELD_MAX_LENGTH: Partial<Record<(typeof REQUIRED_FIELDS)[number], number>> = {
+  name: 255,
+  institute: 255,
+  email: 255,
+};
+const FIELD_LABEL: Record<(typeof REQUIRED_FIELDS)[number], string> = {
+  name: 'Contact name',
+  institute: 'Institute',
+  email: 'Email',
+  description: 'Description',
+};
+const fieldLengthError = (fields: Partial<Record<string, string | string[]>>) => {
+  for (const [field, max] of Object.entries(FIELD_MAX_LENGTH) as [(typeof REQUIRED_FIELDS)[number], number][]) {
+    const raw = fields[field];
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (value && value.length > max) return `${FIELD_LABEL[field]} is too long (${max} characters at most).`;
   }
+  return null;
 };
 
-const closeFileStream = async (stream: ReturnType<typeof createWriteStream>) => {
-  await new Promise<void>((resolve, reject) => {
-    stream.end((error?: Error | null) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-};
-
-const saveFile = async (dir: string, file: File, maxBytes: number) => {
-  const safeName = sanitizeFilename(file.name || 'file');
-  const targetPath = path.join(dir, safeName);
-  const reader = file.stream().getReader();
-  const writer = createWriteStream(targetPath, { flags: 'wx' });
-  let bytes = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-
-      bytes += value.byteLength;
-      if (bytes > maxBytes) {
-        throw new UserFacingError(`File '${file.name}' exceeded ${formatBytes(maxBytes)} while streaming.`, 413);
-      }
-
-      await writeFileChunk(writer, value);
-    }
-
-    await closeFileStream(writer);
-  } catch (error) {
-    writer.destroy();
-    await unlink(targetPath).catch(() => undefined);
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-
-  return safeName;
-};
+/** Refuse a form whose fields are already wrong before its upload is written. */
+const checkFieldsBeforeFile = (fields: Record<string, string>) =>
+  fields.email !== undefined && !isSingleEmailAddress(fields.email.trim())
+    ? SINGLE_ADDRESS_ERROR
+    : fieldLengthError(fields);
 
 const saveSubmission = async (
   submissionDir: string,
@@ -235,29 +220,91 @@ const saveSubmission = async (
   await writeFile(summaryPath, JSON.stringify(fields, null, 2), 'utf8');
 };
 
-const sendAcknowledgementEmail = async (fields: SubmissionFields, sampleCount: number = 0) => {
+const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/** "1 assembly, 1 metadata file (12 samples)": what arrived, without anything the submitter typed. */
+const filesReceived = (fields: SubmissionFields, sampleCount: number): string => {
+  const parts: string[] = [];
+  if (fields.assemblies.length > 0) parts.push(plural(fields.assemblies.length, 'assembly', 'assemblies'));
+  if (fields.metadata) {
+    parts.push(`1 metadata file${sampleCount > 0 ? ` (${plural(sampleCount, 'sample', 'samples')})` : ''}`);
+  }
+  return parts.join(', ');
+};
+
+/** One line, bounded: submitter text going into a Subject header. */
+const headerText = (value: string, max = 80) => value.replace(/[\r\n]+/g, ' ').trim().slice(0, max);
+
+/**
+ * Two emails, so submitter-written text only ever reaches the team.
+ *
+ * The acknowledgement used to quote the submitter's name, institute, description and
+ * file names back to the address in the form -- any single address -- under the atlas
+ * From address: text of the sender's choosing, relayed to a recipient of their
+ * choosing. It now says only what arrived. Everything the submitter wrote goes in a
+ * separate notification to CONTRIBUTION_CC, with Reply-To set to the submitter.
+ *
+ * A submission with no files is not acknowledged at all (see the route): it was
+ * only ever an email to an address the sender chose.
+ */
+const sendContributionEmails = async (fields: SubmissionFields, sampleCount: number = 0) => {
   const mailConfig = buildMailTransport();
   if (!mailConfig) return;
+  const { transporter, from } = mailConfig;
 
-  const ccRaw = process.env.CONTRIBUTION_CC || '';
-  const cc = ccRaw
+  const team = (process.env.CONTRIBUTION_CC || '')
     .split(',')
     .map((v) => v.trim())
     .filter(Boolean);
+  const hasFiles = fields.assemblies.length > 0 || !!fields.metadata;
 
-  const { transporter, from } = mailConfig;
-  const to = fields.email;
-  const subject = `BGC Atlas contribution received (${fields.submissionId})`;
-  const body = `Hello ${fields.name},\n\nThank you for contributing to BGC Atlas. We received your submission and will follow up if we need additional information.\n\nSubmission ID: ${fields.submissionId}\nInstitute: ${fields.institute}\nDescription: ${fields.description}\nAssemblies: ${fields.assemblies.length > 0 ? fields.assemblies.join(', ') : 'None provided'}\nMetadata file: ${fields.metadata ?? 'None provided'}${sampleCount > 0 ? `\nSamples parsed: ${sampleCount}` : ''}\n\nBest regards,\nThe BGC Atlas Team`;
+  if (team.length > 0) {
+    const details = [
+      `Submission ID: ${fields.submissionId}`,
+      `Name: ${fields.name}`,
+      `Institute: ${fields.institute}`,
+      `Email: ${fields.email}`,
+      `Description: ${fields.description}`,
+      `Assemblies: ${fields.assemblies.length > 0 ? fields.assemblies.join(', ') : 'None provided'}`,
+      `Metadata file: ${fields.metadata ?? 'None provided'}${sampleCount > 0 ? ` (${plural(sampleCount, 'sample', 'samples')} parsed)` : ''}`,
+    ];
+    try {
+      await transporter.sendMail({
+        from,
+        to: team,
+        replyTo: fields.email,
+        subject: `BGC Atlas contribution: ${headerText(fields.name)} (${headerText(fields.institute)})`,
+        text: `A contribution was submitted to BGC Atlas.${hasFiles ? '' : ' It has no files attached, so the submitter was not sent an acknowledgement.'}\n\n${details.join('\n')}\n\nReplying to this message reaches the submitter.`,
+      });
+    } catch (error) {
+      console.error('Failed to send the contribution notification to the team', error);
+    }
+  }
 
-  await transporter.sendMail({
-    from,
-    to,
-    cc: cc.length > 0 ? cc : undefined,
-    replyTo: to,
-    subject,
-    text: body,
-  });
+  if (hasFiles) {
+    try {
+      await transporter.sendMail({
+        from,
+        to: fields.email,
+        subject: `BGC Atlas contribution received (${fields.submissionId})`,
+        text: [
+          'Hello,',
+          '',
+          'Thank you for contributing to BGC Atlas. We received your submission and will follow up if we need additional information.',
+          '',
+          `Submission ID: ${fields.submissionId}`,
+          `Files received: ${filesReceived(fields, sampleCount)}`,
+          '',
+          'If you did not submit this, you can ignore this message.',
+          '',
+          'Best regards,',
+          'The BGC Atlas Team',
+        ].join('\n'),
+      });
+    } catch (error) {
+      console.error('Failed to send the contribution acknowledgement', error);
+    }
+  }
 };
 
 export async function POST(request: Request) {
@@ -279,12 +326,18 @@ export async function POST(request: Request) {
     );
   }
 
+  const envelopeError = validateRequestEnvelope(request);
+  if (envelopeError) return envelopeError;
+
+  if (uploadsInFlight >= MAX_CONCURRENT_UPLOADS) {
+    return NextResponse.json(
+      { error: 'Another contribution is being uploaded right now. Please try again in a minute.' },
+      { status: 503, headers: { 'Retry-After': '60' } },
+    );
+  }
+  uploadsInFlight += 1;
+
   try {
-    const envelopeError = validateRequestEnvelope(request);
-    if (envelopeError) return envelopeError;
-
-    const formData = await request.formData();
-
     const fields: SubmissionFields = {
       submissionId: createSubmissionId(),
       name: '',
@@ -293,10 +346,25 @@ export async function POST(request: Request) {
       description: '',
       assemblies: [],
     };
+    const submissionDir = path.join(getUploadsDir(), fields.submissionId);
+
+    let upload: ReceivedUpload;
+    try {
+      upload = await receiveMultipart(request, {
+        dir: submissionDir,
+        files: UPLOAD_POLICIES,
+        safeName: sanitizeFilename,
+        checkFieldsBeforeFile,
+      });
+    } catch (error) {
+      await rm(submissionDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
 
     for (const field of REQUIRED_FIELDS) {
-      const value = toStringValue(formData.get(field));
+      const value = (upload.fields[field] ?? '').trim();
       if (!value) {
+        await rm(submissionDir, { recursive: true, force: true }).catch(() => undefined);
         return NextResponse.json(
           { error: `Missing required field: ${field}` },
           { status: 400 },
@@ -305,125 +373,117 @@ export async function POST(request: Request) {
       fields[field] = value;
     }
 
-    const assemblyEntries = formData.getAll('assemblies').filter((entry): entry is File => entry instanceof File);
-    const metadataEntry = formData.get('metadata');
-    const metadataFile = metadataEntry instanceof File ? metadataEntry : null;
-
-    const assemblyValidationError = validateAssemblyFiles(assemblyEntries);
-    if (assemblyValidationError) {
-      return NextResponse.json({ error: assemblyValidationError }, { status: 400 });
+    if (!isSingleEmailAddress(fields.email)) {
+      await rm(submissionDir, { recursive: true, force: true }).catch(() => undefined);
+      return NextResponse.json({ error: SINGLE_ADDRESS_ERROR }, { status: 400 });
+    }
+    const lengthError = fieldLengthError(fields);
+    if (lengthError) {
+      await rm(submissionDir, { recursive: true, force: true }).catch(() => undefined);
+      return NextResponse.json({ error: lengthError }, { status: 400 });
     }
 
-    const metadataValidationError = validateMetadataFile(metadataFile);
-    if (metadataValidationError) {
-      return NextResponse.json({ error: metadataValidationError }, { status: 400 });
-    }
+    const metadataFile = upload.files.find((f) => f.field === 'metadata') ?? null;
 
-    const uploadsRoot = getUploadsDir();
-    const submissionDir = path.join(uploadsRoot, fields.submissionId);
+    // Metadata that does not validate is refused, not half-stored: the page blocks
+    // Submit until the file is fixed, and this is the same rule for any other caller.
+    const metadata = metadataFile?.content
+      ? await parseAndValidateCsv(decodeMetadataBytes(metadataFile.content))
+      : null;
+    const problems = metadata ? metadataProblems(metadata.parsingResult, metadata.validationResult) : [];
+    if (problems.length > 0) {
+      await rm(submissionDir, { recursive: true, force: true }).catch(() => undefined);
+      return NextResponse.json(
+        { error: `The metadata file needs fixing before it can be submitted: ${problems.join(' | ')}`, problems },
+        { status: 400 },
+      );
+    }
+    fields.assemblies = upload.files.filter((f) => f.field === 'assemblies').map((f) => f.savedName);
+    // Created by the first file; a file-less submission still keeps its record here.
     await mkdir(submissionDir, { recursive: true });
 
     try {
-      for (const file of assemblyEntries) {
-        if (file.size === 0) continue;
-        const savedName = await saveFile(submissionDir, file, MAX_ASSEMBLY_FILE_BYTES);
-        fields.assemblies.push(savedName);
-      }
-
       let sampleCount = 0;
+      const contributionData = {
+        submission_id: fields.submissionId,
+        name: fields.name,
+        institute: fields.institute,
+        email: fields.email,
+        description: fields.description,
+        assembly_count: fields.assemblies.length,
+        status: 'pending',
+      };
 
-      if (metadataFile && metadataFile.size > 0) {
-        const metadataName = await saveFile(submissionDir, metadataFile, MAX_METADATA_FILE_BYTES);
-        fields.metadata = metadataName;
+      if (metadata && metadataFile) {
+        fields.metadata = metadataFile.savedName;
+        const validSamples = metadata.validationResult.samples.filter((s) => s.valid && s.data);
+        // 0 is a value: depth 0, 0 degrees C, salinity 0, the equator. A truthiness
+        // test stored every one of them as NULL.
+        const num = (v: number | undefined | null) => (v === undefined || v === null ? null : String(v));
+        const text = (v: string | undefined | null) => (v === undefined || v === null || v === '' ? null : v);
 
-        const metadataContent = await metadataFile.text();
-        const { validationResult } = await parseAndValidateCsv(metadataContent);
-
-        const contribution = await prisma.userContribution.create({
-          data: {
-            submission_id: fields.submissionId,
-            name: fields.name,
-            institute: fields.institute,
-            email: fields.email,
-            description: fields.description,
-            assembly_count: fields.assemblies.length,
-            metadata_provided: true,
-            status: 'pending',
-          },
-        });
-
-        const validSamples = validationResult.samples.filter((s) => s.valid && s.data);
-
-        for (const sampleResult of validSamples) {
-          const sample = sampleResult.data!;
-
-          // Assemblies belong to a sample by filename convention.
-          const assemblyFilenames = fields.assemblies.filter((filename) =>
-            filename.toLowerCase().includes(sample.sample_alias.toLowerCase())
-          );
-
-          await prisma.userContributionSample.create({
-            data: {
-              contribution_id: contribution.id,
-              sample_alias: sample.sample_alias,
-              assembly_filenames: assemblyFilenames,
-              latitude: sample.latitude ? String(sample.latitude) : null,
-              longitude: sample.longitude ? String(sample.longitude) : null,
-              geographic_location: sample.geographic_location || null,
-              location_resolution: sample.location_resolution || null,
-              geolocation_name: sample.geolocation_name || null,
-              environment_biome: sample.environment_biome || null,
-              environment_feature: sample.environment_feature || null,
-              environment_material: sample.environment_material || null,
-              environmental_package: sample.environmental_package || null,
-              depth_min_meters: sample.depth_min_meters ? String(sample.depth_min_meters) : null,
-              depth_max_meters: sample.depth_max_meters ? String(sample.depth_max_meters) : null,
-              elevation_meters: sample.elevation_meters ? String(sample.elevation_meters) : null,
-              temperature: sample.temperature ? String(sample.temperature) : null,
-              ph: sample.ph ? String(sample.ph) : null,
-              salinity: sample.salinity ? String(sample.salinity) : null,
-              salinity_unit: sample.salinity_unit || null,
-              current_precipitation_mm: sample.current_precipitation_mm ? String(sample.current_precipitation_mm) : null,
-              mean_annual_precipitation_mm: sample.mean_annual_precipitation_mm ? String(sample.mean_annual_precipitation_mm) : null,
-              mean_annual_temperature: sample.mean_annual_temperature ? String(sample.mean_annual_temperature) : null,
-              collection_date: sample.collection_date ? new Date(sample.collection_date) : null,
-              collection_date_end: sample.collection_date_end ? new Date(sample.collection_date_end) : null,
-              description: sample.description || null,
-              host_taxid: sample.host_taxid || null,
-              host_scientific_name: sample.host_scientific_name || null,
-              external_id: sample.external_id || null,
-              accession: sample.accession || null,
-              additional_metadata: (sample.additional_metadata || {}) as unknown as Prisma.InputJsonValue,
-              validation_warnings: (sampleResult.warnings || []) as unknown as Prisma.InputJsonValue,
-            },
+        // One transaction: a failure part-way used to leave the contribution row and
+        // some of its samples behind while the route deleted the uploaded files.
+        await prisma.$transaction(async (tx) => {
+          const contribution = await tx.userContribution.create({
+            data: { ...contributionData, metadata_provided: true },
           });
-
-          sampleCount++;
-        }
+          await tx.userContributionSample.createMany({
+            data: validSamples.map(({ data, warnings }) => {
+              const sample = data!;
+              return {
+                contribution_id: contribution.id,
+                sample_alias: sample.sample_alias,
+                // The file's own assembly_filenames column when it has one, else the
+                // alias matched against the uploaded names.
+                assembly_filenames: sample.assembly_filenames?.length
+                  ? sample.assembly_filenames
+                  : assembliesForSample(sample.sample_alias, fields.assemblies, validSamples.length),
+                latitude: num(sample.latitude),
+                longitude: num(sample.longitude),
+                geographic_location: text(sample.geographic_location),
+                location_resolution: text(sample.location_resolution),
+                geolocation_name: text(sample.geolocation_name),
+                environment_biome: text(sample.environment_biome),
+                environment_feature: text(sample.environment_feature),
+                environment_material: text(sample.environment_material),
+                environmental_package: text(sample.environmental_package),
+                depth_min_meters: num(sample.depth_min_meters),
+                depth_max_meters: num(sample.depth_max_meters),
+                elevation_meters: num(sample.elevation_meters),
+                temperature: num(sample.temperature),
+                ph: num(sample.ph),
+                salinity: num(sample.salinity),
+                salinity_unit: text(sample.salinity_unit),
+                current_precipitation_mm: num(sample.current_precipitation_mm),
+                mean_annual_precipitation_mm: num(sample.mean_annual_precipitation_mm),
+                mean_annual_temperature: num(sample.mean_annual_temperature),
+                collection_date: sample.collection_date ? new Date(sample.collection_date) : null,
+                collection_date_end: sample.collection_date_end ? new Date(sample.collection_date_end) : null,
+                description: text(sample.description),
+                host_taxid: sample.host_taxid ?? null,
+                host_scientific_name: text(sample.host_scientific_name),
+                external_id: text(sample.external_id),
+                accession: text(sample.accession),
+                additional_metadata: (sample.additional_metadata || {}) as unknown as Prisma.InputJsonValue,
+                validation_warnings: (warnings || []) as unknown as Prisma.InputJsonValue,
+              };
+            }),
+          });
+        });
+        sampleCount = validSamples.length;
 
         console.log(`Stored ${sampleCount} samples for contribution ${fields.submissionId}`);
       } else if (fields.assemblies.length > 0) {
         await prisma.userContribution.create({
-          data: {
-            submission_id: fields.submissionId,
-            name: fields.name,
-            institute: fields.institute,
-            email: fields.email,
-            description: fields.description,
-            assembly_count: fields.assemblies.length,
-            metadata_provided: false,
-            status: 'pending',
-          },
+          data: { ...contributionData, metadata_provided: false },
         });
       }
 
       await saveSubmission(submissionDir, fields);
 
-      try {
-        await sendAcknowledgementEmail(fields, sampleCount);
-      } catch (emailError) {
-        console.error('Failed to send acknowledgement email', emailError);
-      }
+      // Each email catches its own failure: a mail outage must not fail a saved submission.
+      await sendContributionEmails(fields, sampleCount);
 
       return NextResponse.json({
         success: true,
@@ -436,5 +496,7 @@ export async function POST(request: Request) {
     }
   } catch (err) {
     return serverError(err, 'Contribution processing failed');
+  } finally {
+    uploadsInFlight -= 1;
   }
 }

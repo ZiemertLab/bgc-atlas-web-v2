@@ -20,6 +20,7 @@ import { InfoTooltip } from '@/components/ui/info-tooltip';
 import { FragmentedBadge } from '@/components/ui/fragmented-badge';
 import { ProductCategoryChart } from '@/components/ui/product-category-chart';
 import { BiomeDistributionChart } from '@/components/ui/biome-distribution-chart';
+import { ecosystemColumnTooltip, ecosystemResolvedNote, ecosystemValueLabel } from '@/lib/gcf/share-display';
 import { TaxonomyDistributionChart } from '@/components/ui/taxonomy-distribution-chart';
 import { SampleGcfCount, SAMPLE_GCF_HEADER_TOOLTIP } from '@/components/ui/sample-gcf-count';
 import { SampleDataSourceLinks } from '@/components/ui/sample-data-source-links';
@@ -464,7 +465,7 @@ export function EntityResults({ group, entity, nonce, familyScope }: {
           </SelectContent>
         </Select>
       ),
-      headerTooltip: `Distribution of member BGCs across GOLD ecosystem level ${ecosystemLevel} classifications`,
+      headerTooltip: ecosystemColumnTooltip(ecosystemLevel),
       width: width('biomeDistribution', 260),
       minWidth: 160,
       sortable: false,
@@ -476,7 +477,12 @@ export function EntityResults({ group, entity, nonce, familyScope }: {
         }
         return (
           <div className="w-full px-1">
-            <BiomeDistributionChart distribution={distribution} height={24} />
+            <BiomeDistributionChart
+              distribution={distribution}
+              height={24}
+              valueLabel={ecosystemValueLabel(ecosystemLevel)}
+              footnote={ecosystemResolvedNote(ecosystemLevel, gcf.ecosystemResolvedPctByLevel?.[ecosystemLevel])}
+            />
           </div>
         );
       },

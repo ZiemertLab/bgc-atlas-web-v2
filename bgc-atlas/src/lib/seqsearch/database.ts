@@ -158,18 +158,37 @@ export async function updateSessionStatus(
   }
 }
 
+/** What a search ran with; a recent session is only reused when all of these match. */
+export interface DuplicateSearchKey {
+  sequenceType: 'nucleotide' | 'protein';
+  eValue: number;
+  minIdentity: number;
+  minCoverage: number;
+  maxResults: number;
+}
+
 export async function checkDuplicateSearch(
   sequenceHash: string,
+  key: DuplicateSearchKey,
   maxAgeHours: number = 24,
 ): Promise<string | null> {
   try {
     const cutoffTime = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+    // The parameters as well as the sequence: matching on the hash alone handed a
+    // search resubmitted at 30% identity the session that had run at 90%. Identity
+    // and coverage are numeric(5,2) columns, so the request is rounded the way the
+    // stored value was before comparing.
     const result = await prisma.$queryRaw<Array<{ session_id: string }>>`
       SELECT session_id
       FROM sequence_search_sessions
       WHERE sequence_hash = ${sequenceHash}
         AND created_at > ${cutoffTime}
         AND status IN ('completed', 'running', 'pending')
+        AND sequence_type = ${key.sequenceType}
+        AND e_value = ${key.eValue}::float8
+        AND min_identity = ${key.minIdentity}::numeric(5,2)
+        AND min_coverage = ${key.minCoverage}::numeric(5,2)
+        AND max_results = ${key.maxResults}::int
       ORDER BY created_at DESC
       LIMIT 1
     `;
@@ -279,7 +298,51 @@ export async function storeSearchResults(
   }
 }
 
-function filterConditions(sessionId: string, options: GetResultGroupsOptions): Prisma.Sql[] {
+/** The hit filters the results table, its sample map and its GBK export all apply. */
+export interface SequenceHitFilters {
+  minIdentity?: number;
+  minCoverage?: number;
+  queryFrom?: number;
+  queryTo?: number;
+  queryId?: string;
+}
+
+const finite = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+/**
+ * Filters from a request body: finite numbers only, a locus only as a pair, and the
+ * query (contig) a locus lies on. A locus is a span of ONE contig: in a multi-FASTA
+ * nucleotide search every contig shares coordinates.
+ */
+export function parseHitFilters(raw: unknown): SequenceHitFilters {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const filters: SequenceHitFilters = {
+    minIdentity: finite(r.minIdentity),
+    minCoverage: finite(r.minCoverage),
+  };
+  const queryFrom = finite(r.queryFrom);
+  const queryTo = finite(r.queryTo);
+  if (queryFrom !== undefined && queryTo !== undefined) Object.assign(filters, { queryFrom, queryTo });
+  if (typeof r.queryId === 'string' && r.queryId.length > 0 && r.queryId.length <= 1000) {
+    filters.queryId = r.queryId;
+  }
+  return filters;
+}
+
+/** parseHitFilters from a query string, whose numbers arrive as text. */
+export function hitFiltersFromSearchParams(params: URLSearchParams): SequenceHitFilters {
+  const numberParam = (key: string) => (params.has(key) ? Number(params.get(key)) : undefined);
+  return parseHitFilters({
+    minIdentity: numberParam('minIdentity'),
+    minCoverage: numberParam('minCoverage'),
+    queryFrom: numberParam('queryFrom'),
+    queryTo: numberParam('queryTo'),
+    queryId: params.get('queryId') ?? undefined,
+  });
+}
+
+export function filterConditions(sessionId: string, options: SequenceHitFilters): Prisma.Sql[] {
   const conditions = [Prisma.sql`r.session_id = ${sessionId}`];
   if (options.minIdentity !== undefined) conditions.push(Prisma.sql`r.identity >= ${options.minIdentity}`);
   if (options.minCoverage !== undefined) conditions.push(Prisma.sql`r.coverage >= ${options.minCoverage}`);
@@ -294,6 +357,17 @@ function filterConditions(sessionId: string, options: GetResultGroupsOptions): P
   return conditions;
 }
 
+// The distinct Atlas BGCs a session's filtered hits land in; hits whose target never resolved
+// to a BGC have no region file to package or map. Session-local rows, so fast at any size.
+export async function getHitBgcIds(sessionId: string, filters: SequenceHitFilters): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ bgc_id: string }>>(Prisma.sql`
+    SELECT DISTINCT r.bgc_id::text AS bgc_id
+    FROM sequence_search_results r
+    WHERE ${Prisma.join([...filterConditions(sessionId, filters), Prisma.sql`r.bgc_id IS NOT NULL`], ' AND ')}
+  `);
+  return rows.map((r) => r.bgc_id);
+}
+
 export async function getResultGroups(
   sessionId: string,
   options: GetResultGroupsOptions = {},
@@ -303,13 +377,16 @@ export async function getResultGroups(
   try {
     const where = Prisma.sql`WHERE ${Prisma.join(filterConditions(sessionId, options), ' AND ')}`;
 
+    // Every variant ends on the group key (column 1), unique per row: groups that tie on the
+    // sort values otherwise came back in a different order per query, and LIMIT/OFFSET paging
+    // showed some BGCs twice and others never.
     const orderBy = sortBy === 'querygenes'
-      ? Prisma.sql`ORDER BY count(DISTINCT r.query_id) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, max(r.bit_score) DESC`
+      ? Prisma.sql`ORDER BY count(DISTINCT r.query_id) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, max(r.bit_score) DESC, 1 ASC`
       : sortBy === 'identity'
-      ? Prisma.sql`ORDER BY max(r.identity) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, min(r.e_value) ASC`
+      ? Prisma.sql`ORDER BY max(r.identity) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, min(r.e_value) ASC, 1 ASC`
       : sortBy === 'bitscore'
-        ? Prisma.sql`ORDER BY max(r.bit_score) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, min(r.e_value) ASC`
-        : Prisma.sql`ORDER BY min(r.e_value) ${Prisma.raw(sortOrder === 'desc' ? 'DESC' : 'ASC')}, max(r.bit_score) DESC`;
+        ? Prisma.sql`ORDER BY max(r.bit_score) ${Prisma.raw(sortOrder === 'asc' ? 'ASC' : 'DESC')}, min(r.e_value) ASC, 1 ASC`
+        : Prisma.sql`ORDER BY min(r.e_value) ${Prisma.raw(sortOrder === 'desc' ? 'DESC' : 'ASC')}, max(r.bit_score) DESC, 1 ASC`;
 
     type GroupRow = {
       group_key: string;
@@ -374,7 +451,7 @@ export async function getResultGroups(
 export async function getGroupHits(
   sessionId: string,
   groupKey: string,
-  options: { minIdentity?: number; minCoverage?: number } = {},
+  options: SequenceHitFilters = {},
 ): Promise<ResultHit[]> {
   try {
     const conditions = filterConditions(sessionId, options);
@@ -447,7 +524,10 @@ export async function getGroupHits(
 }
 
 // For CSV export.
-export async function getAllSessionHits(sessionId: string): Promise<ResultHit[]> {
+export async function getAllSessionHits(
+  sessionId: string,
+  filters: SequenceHitFilters = {},
+): Promise<ResultHit[]> {
   const rows = await prisma.$queryRaw<Array<{
     result_id: string; target_id: string | null; query_id: string | null;
     identity: string; coverage: string; e_value: number; bit_score: string;
@@ -455,16 +535,16 @@ export async function getAllSessionHits(sessionId: string): Promise<ResultHit[]>
     target_start: number; target_end: number; target_length: number;
     alignment_length: number; num_mismatches: number | null; num_gaps: number | null;
     rank: number; bgc_id: string | null;
-  }>>`
+  }>>(Prisma.sql`
     SELECT
       r.id::text AS result_id, r.target_id, r.query_id, r.identity, r.coverage,
       r.e_value, r.bit_score, r.query_start, r.query_end, r.query_length,
       r.target_start, r.target_end, r.target_length, r.alignment_length,
       r.num_mismatches, r.num_gaps, r.rank, r.bgc_id::text AS bgc_id
     FROM sequence_search_results r
-    WHERE r.session_id = ${sessionId}
+    WHERE ${Prisma.join(filterConditions(sessionId, filters), ' AND ')}
     ORDER BY r.query_id, r.rank
-  `;
+  `);
 
   return rows.map(row => ({
     resultId: row.result_id,
@@ -510,6 +590,7 @@ export async function getSessionMetadata(sessionId: string): Promise<{
   totalHits: number;
   searchDurationMs: number | null;
   createdAt: Date;
+  startedAt: Date | null;
   completedAt: Date | null;
   errorMessage: string | null;
   sequenceType: string;
@@ -527,6 +608,7 @@ export async function getSessionMetadata(sessionId: string): Promise<{
       total_hits: number | null;
       search_duration_ms: number | null;
       created_at: Date;
+      started_at: Date | null;
       completed_at: Date | null;
       error_message: string | null;
       sequence_type: string;
@@ -538,7 +620,7 @@ export async function getSessionMetadata(sessionId: string): Promise<{
       total_groups: bigint;
     };
     const result = await prisma.$queryRaw<SessionRow[]>`
-      SELECT session_id, status, total_hits, search_duration_ms, created_at, completed_at,
+      SELECT session_id, status, total_hits, search_duration_ms, created_at, started_at, completed_at,
              error_message, sequence_type, max_results, e_value, min_identity, min_coverage,
              (input_sequence ~ '^LOCUS\\s+\\S') AS is_genbank,
              (SELECT count(DISTINCT ${GROUP_KEY}) FROM sequence_search_results r
@@ -557,6 +639,7 @@ export async function getSessionMetadata(sessionId: string): Promise<{
       totalHits: row.total_hits ?? 0,
       searchDurationMs: row.search_duration_ms,
       createdAt: row.created_at,
+      startedAt: row.started_at,
       completedAt: row.completed_at,
       errorMessage: row.error_message,
       sequenceType: row.sequence_type,
@@ -570,8 +653,10 @@ export async function getSessionMetadata(sessionId: string): Promise<{
       },
     };
   } catch (error) {
-    console.error('Error retrieving session metadata:', error);
-    return null;
+    // Not null: null means "no such session", which the results page takes as final
+    // and stops polling on. A DB error or a statement timeout is a 5xx the page
+    // retries, from the route's own catch.
+    throw error;
   }
 }
 

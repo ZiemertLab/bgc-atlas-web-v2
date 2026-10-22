@@ -73,3 +73,45 @@ def test_bgc_corpus_projects_the_combined_archive_offset():
     sql = BROWSE_INDEX_CONFIGS["bgcs"].sql
     assert "go.gbk_offset, go.gbk_length" in sql
     assert "LEFT JOIN bgc_gbk_offsets go ON go.bgc_id = b.id" in sql
+
+
+def test_study_coverage_refuses_a_corpus_built_on_another_clusterings_study_tables():
+    from scripts.populator.tools.build_browse_corpus import study_coverage_problem
+
+    # R2.0-beta.6 as it was built: no listed family matched gcf_study_count.
+    assert "previous clustering" in study_coverage_problem(629_872, 0)
+    assert study_coverage_problem(0, 0) is not None
+    # As it should have been: 585,483 of 629,872 listed families have a study.
+    assert study_coverage_problem(629_872, 585_483) is None
+
+
+def test_gcf_corpus_selects_every_share_field_the_mapping_declares():
+    """A field that exists only as a gcf_scalar_patch.py patch is dropped by the
+    next corpus rebuild, silently (post-load runbook, section 4)."""
+    from scripts.populator.tools.browse_index_mapping import build_mapping
+    sql = BROWSE_INDEX_CONFIGS["gcfs"].sql
+    props = build_mapping("gcfs")["mappings"]["properties"]
+    share_fields = [f for f in props if f.startswith(
+        ("product_types_ge", "eco_l", "resolved_pct_l", "dom_ecosystem_l"))
+        and not f.endswith("_any")]
+    share_fields.append("product_type_member_share")
+    assert len(share_fields) == 3 + 15 + 5 + 5 + 1
+    for field in share_fields:
+        assert f"gd.{field}" in sql, field
+    # eco_l<n>_any is derived in the query from biome_distribution_l<n>'s keys.
+    for n in range(1, 6):
+        assert (f"jsonb_object_keys(COALESCE(gd.biome_distribution_l{n}, '{{}}'::jsonb)) k "
+                f"ORDER BY k) AS eco_l{n}_any") in sql, n
+
+
+def test_eco_any_patch_map_and_corpus_derive_the_lists_identically():
+    """Share fields part 2: the patch map and a corpus rebuild must write the same
+    eco_l<n>_any lists, or a rebuild would quietly change the "any member" answer."""
+    from pathlib import Path
+    sql = BROWSE_INDEX_CONFIGS["gcfs"].sql
+    map_sql = (Path(__file__).resolve().parents[1] / "tools" / "gcf_share_fields_any_map.sql").read_text()
+    for n in range(1, 6):
+        corpus_expr = (f"ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l{n}, "
+                       f"'{{}}'::jsonb)) k ORDER BY k)")
+        assert corpus_expr in sql, n
+        assert corpus_expr.replace("gd.", "d.") in map_sql, n

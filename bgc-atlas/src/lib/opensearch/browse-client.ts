@@ -1,5 +1,8 @@
+import { NextResponse } from 'next/server';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { buildBrowseSearchRequest, type BrowseEntity } from './browse-query';
 import { osRequest } from './http';
+import { DEEP_PAGE_CODE } from '@/lib/api/refusal-codes';
 
 const indexByEntity: Record<BrowseEntity, string> = {
   bgcs: process.env.OPENSEARCH_BGC_BROWSE_INDEX || 'bgc_browse',
@@ -31,6 +34,93 @@ export function parseBrowseSearchResponse(response: unknown): BrowseSearchResult
   };
 }
 
+/** A non-2xx answer from the browse index, with its status kept for isTransientBrowseError. */
+export class BrowseIndexHttpError extends Error {
+  /** OpenSearch's root_cause[0].type, e.g. 'query_shard_exception', when the body said. */
+  readonly rootCauseType: string | undefined;
+  /** And its reason, for the log -- never shown to the caller: it names indexes. */
+  readonly rootCauseReason: string | undefined;
+
+  constructor(readonly status: number, text: string) {
+    super(`OpenSearch ${status}: ${text.slice(0, 300)}`);
+    this.name = 'BrowseIndexHttpError';
+    try {
+      const cause = (JSON.parse(text) as { error?: { root_cause?: { type?: unknown; reason?: unknown }[] } })
+        ?.error?.root_cause?.[0];
+      this.rootCauseType = typeof cause?.type === 'string' ? cause.type : undefined;
+      this.rootCauseReason = typeof cause?.reason === 'string' ? cause.reason : undefined;
+    } catch {
+      this.rootCauseType = undefined;
+      this.rootCauseReason = undefined;
+    }
+  }
+}
+
+/**
+ * The index refused the QUERY, not the request's timing: a value it cannot use (a
+ * number out of range for the field), or a page past its result window. Retrying
+ * cannot help and neither can the SQL fallback -- every one of these in the log was
+ * bad input, and the fallback spent up to 45 s and two of the pool's connections to
+ * reach a 503 that blamed the index. OpenSearch answers an out-of-range INT with a
+ * 500 (input_coercion_exception), so that one is a refusal too, not an outage.
+ */
+export function isBrowseQueryRejection(error: unknown): error is BrowseIndexHttpError {
+  if (!(error instanceof BrowseIndexHttpError)) return false;
+  if (error.status === 400) return true;
+  return error.status === 500 && error.rootCauseType === 'input_coercion_exception';
+}
+
+/** The caller's answer for isBrowseQueryRejection: a 400 that says what to change. */
+export function browseQueryRejectionResponse(error: BrowseIndexHttpError, what: string): NextResponse {
+  const pastWindow = /result window is too large/i.test(error.rootCauseReason ?? '');
+  console.warn(`${what}: the index refused the query (${error.status} ${error.rootCauseType ?? 'unknown'}): `
+    + `${(error.rootCauseReason ?? '').slice(0, 200)}`);
+  return NextResponse.json(
+    {
+      success: false,
+      // A page past the window is the deep-page refusal by another route, so the
+      // list keeps its pager. A value the index cannot use stays code-less: it
+      // does not name the filter, so the page shows the sentence alone.
+      ...(pastWindow ? { code: DEEP_PAGE_CODE } : {}),
+      error: pastWindow
+        ? 'Cannot page this far into the results. Narrow the filters or sort the other way.'
+        : 'A value in this query is outside what the search accepts, for example a number '
+          + 'that is too large. Check the filter values.',
+    },
+    { status: 400 },
+  );
+}
+
+/** Per-call timeout for browse-index requests; withBrowseTimeout narrows it. */
+const DEFAULT_BROWSE_TIMEOUT_MS = 20_000;
+const browseTimeout = new AsyncLocalStorage<number>();
+
+/**
+ * Run `fn` with every browse-index request inside it limited to `timeoutMs`. A
+ * retry after a stall uses this: the deep-page resolver may make dozens of calls,
+ * and threading a timeout through each of their signatures would be noise.
+ */
+export function withBrowseTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  return browseTimeout.run(timeoutMs, fn);
+}
+
+/**
+ * Whether a browse-index failure is worth one more try: a timeout, a connection
+ * that failed, or OpenSearch saying it is overloaded or broken (429, 5xx). A 4xx
+ * is about the request -- a page past the result window, an unmapped field -- and
+ * asking again gets the same answer.
+ */
+export function isTransientBrowseError(error: unknown): boolean {
+  if (isBrowseQueryRejection(error)) return false;
+  if (error instanceof BrowseIndexHttpError) return error.status === 429 || error.status >= 500;
+  if (!(error instanceof Error)) return false;
+  // AbortSignal.timeout rejects with a DOMException named TimeoutError; undici
+  // reports a refused or reset connection as TypeError('fetch failed') with the
+  // socket error as its cause.
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true;
+  return error instanceof TypeError && error.message === 'fetch failed';
+}
+
 async function postToBrowseIndex(
   entity: BrowseEntity,
   body: Record<string, unknown>,
@@ -40,10 +130,10 @@ async function postToBrowseIndex(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(browseTimeout.getStore() ?? DEFAULT_BROWSE_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`OpenSearch ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    throw new BrowseIndexHttpError(response.status, await response.text());
   }
   return response.json();
 }

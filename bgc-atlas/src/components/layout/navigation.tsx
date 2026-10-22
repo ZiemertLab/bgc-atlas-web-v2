@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
@@ -31,11 +31,6 @@ function isItemActive(pathname: string, href: string) {
 export function Navigation() {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   return (
     <header className="sticky top-0 z-[1100] w-full border-b border-zinc-900 bg-zinc-950 text-zinc-100">
@@ -57,31 +52,34 @@ export function Navigation() {
           />
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0 overflow-x-auto md:flex">
-          {mounted &&
-            navigationItems.map((item) => {
-              const active = isItemActive(pathname, item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    'relative inline-flex h-14 items-center whitespace-nowrap px-2.5 text-[13px] transition-colors',
-                    active
-                      ? 'font-medium text-zinc-100'
-                      : 'text-zinc-400 hover:text-zinc-100'
-                  )}
-                >
-                  {item.title}
-                  {active && (
-                    <span
-                      aria-hidden
-                      className="absolute inset-x-2.5 bottom-0 h-0.5 bg-brand"
-                    />
-                  )}
-                </Link>
-              );
-            })}
+        <nav
+          aria-label="Main"
+          className="hidden min-w-0 flex-1 items-center gap-0 overflow-x-auto md:flex"
+        >
+          {navigationItems.map((item) => {
+            const active = isItemActive(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={active ? 'page' : undefined}
+                className={cn(
+                  'relative inline-flex h-14 items-center whitespace-nowrap px-2.5 text-[13px] transition-colors',
+                  active
+                    ? 'font-medium text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                )}
+              >
+                {item.title}
+                {active && (
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-2.5 bottom-0 h-0.5 bg-brand"
+                  />
+                )}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="ml-auto flex items-center md:hidden">
@@ -101,26 +99,26 @@ export function Navigation() {
       {mobileMenuOpen && (
         <div className="border-t border-zinc-900 bg-zinc-950 md:hidden">
           <div className="mx-auto w-full max-w-[2100px] px-4 py-3">
-            <nav className="grid">
-              {mounted &&
-                navigationItems.map((item) => {
-                  const active = isItemActive(pathname, item.href);
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      onClick={() => setMobileMenuOpen(false)}
-                      className={cn(
-                        'flex items-center border-b border-zinc-900 px-1 py-2.5 text-sm transition-colors last:border-b-0',
-                        active
-                          ? 'font-medium text-zinc-100'
-                          : 'text-zinc-400 hover:text-zinc-100'
-                      )}
-                    >
-                      {item.title}
-                    </Link>
-                  );
-                })}
+            <nav aria-label="Main (menu)" className="grid">
+              {navigationItems.map((item) => {
+                const active = isItemActive(pathname, item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={cn(
+                      'flex items-center border-b border-zinc-900 px-1 py-2.5 text-sm transition-colors last:border-b-0',
+                      active
+                        ? 'font-medium text-zinc-100'
+                        : 'text-zinc-400 hover:text-zinc-100'
+                    )}
+                  >
+                    {item.title}
+                  </Link>
+                );
+              })}
             </nav>
           </div>
         </div>

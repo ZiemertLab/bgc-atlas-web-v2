@@ -1,4 +1,5 @@
 import { generateSitemaps } from "../sitemap";
+import { readReleases } from "@/lib/releases/read";
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? "https://bgc-atlas.cs.uni-tuebingen.de";
@@ -10,7 +11,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const shards = await generateSitemaps();
-  const lastModified = new Date().toISOString();
+  // The current data release's date, as the shards use; not the time of the request.
+  const releaseDate = (await readReleases()).latest?.date;
+  const lastModified = releaseDate ? new Date(releaseDate).toISOString() : null;
 
   const body = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -19,7 +22,7 @@ export async function GET() {
       [
         "<sitemap>",
         `<loc>${SITE_URL}${BASE_PATH}/sitemap/${id}.xml</loc>`,
-        `<lastmod>${lastModified}</lastmod>`,
+        lastModified ? `<lastmod>${lastModified}</lastmod>` : "",
         "</sitemap>",
       ].join(""),
     ),

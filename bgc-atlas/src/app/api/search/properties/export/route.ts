@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { FilterGroup } from '@/lib/filters/types';
 import { scrollHits } from '@/lib/opensearch/client';
 import { hydrateGcfNames } from '@/lib/opensearch/hydrate';
-import { toDelimited, toJsonRows } from '@/lib/opensearch/export-columns';
+import { EXPORT_COLUMNS, toDelimited, toJsonRows } from '@/lib/opensearch/export-columns';
 import { exportEntities } from '@/lib/opensearch/entity-export';
 import { FamilyScopeError } from '@/lib/opensearch/family-scope';
 import { UnhonourableQueryError } from '@/lib/filters/unhonourable-query';
@@ -12,6 +12,9 @@ import { serverError } from '@/lib/api/errors';
 export const dynamic = 'force-dynamic';
 
 const CAP = 100_000;
+
+// Every column the serializers read, plus gcf_id for the name lookup (already a column).
+const EXPORT_SOURCE_FIELDS = [...new Set([...EXPORT_COLUMNS.map((c) => c.key), 'gcf_id'])];
 
 interface ExportRequest {
   group?: FilterGroup | null;
@@ -80,7 +83,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const rawHits = await scrollHits(body.group ?? null, body.sort ?? null, CAP);
+    // Only the fields the file is built from. Whole facet documents are ~5.6 KB, so the
+    // full _source at the 100,000 cap was ~560 MB of JSON parsed into this process for
+    // 16 columns.
+    const rawHits = await scrollHits(body.group ?? null, body.sort ?? null, CAP, EXPORT_SOURCE_FIELDS);
 
     // bgc_facets carries everything except gcf_name, so resolve that by gcf_id.
     // Not hydrateDisplayFields: at export scale it walks bgcs (~40-50s per 10k

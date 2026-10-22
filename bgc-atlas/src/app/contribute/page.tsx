@@ -11,6 +11,8 @@ import { TemplateDownload } from '@/components/contribute/template-download';
 import { MetadataUpload } from '@/components/contribute/metadata-upload';
 import { MetadataForm } from '@/components/contribute/metadata-form';
 import type { BatchValidationResult, SampleMetadata } from '@/lib/metadata/types';
+import { validateSample } from '@/lib/metadata/validation';
+import { tsvFormatRows } from 'd3-dsv';
 import { EmailLink } from '@/components/layout/email-link';
 import { CONTRIBUTE_ASSEMBLY_MAX_BYTES, CONTRIBUTE_ASSEMBLY_MAX_LABEL } from '@/lib/contribute/limits';
 
@@ -25,7 +27,7 @@ export default function ContributePage() {
   const [metadataFile, setMetadataFile] = useState<File | null>(null);
   const [metadataInputMethod, setMetadataInputMethod] = useState<'csv' | 'form'>('form');
   const [formSamples, setFormSamples] = useState<SampleMetadata[]>([]);
-  const [, setValidationResult] = useState<BatchValidationResult | null>(null);
+  const [validationResult, setValidationResult] = useState<BatchValidationResult | null>(null);
   const assembliesInputRef = useRef<HTMLInputElement | null>(null);
   const metadataInputRef = useRef<HTMLInputElement | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -33,6 +35,31 @@ export default function ContributePage() {
   const [step, setStep] = useState(1);
 
   const isStep1Valid = name.trim() !== '' && institute.trim() !== '' && email.trim() !== '';
+
+  // Form samples the contributor actually filled in; the form starts with one blank.
+  const enteredSamples = formSamples.filter((sample) =>
+    Object.values(sample).some((v) => v !== undefined && v !== null && v !== ''),
+  );
+  // Submit waits for metadata that validates (the route refuses anything else):
+  // an uploaded file once the validate step has answered, form entries as typed.
+  const metadataBlocker = (() => {
+    if (metadataInputMethod === 'csv' && metadataFile) {
+      if (!validationResult) return 'Checking the metadata file…';
+      if (!validationResult.valid) {
+        return 'The metadata file needs fixing before it can be submitted: go back to Metadata to see what to change.';
+      }
+      return null;
+    }
+    if (metadataInputMethod === 'form' && enteredSamples.length > 0) {
+      const invalid = enteredSamples.filter((sample) => !validateSample(sample).valid).length;
+      if (invalid > 0) {
+        return `The metadata needs fixing before it can be submitted: ${invalid.toLocaleString()} of `
+          + `${enteredSamples.length.toLocaleString()} sample${enteredSamples.length === 1 ? ' has' : 's have'} errors `
+          + '(go back to Metadata).';
+      }
+    }
+    return null;
+  })();
   const isStep2Valid = description.trim() !== '';
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -67,19 +94,20 @@ export default function ContributePage() {
 
       if (metadataInputMethod === 'csv' && metadataFile) {
         form.append('metadata', metadataFile);
-      } else if (metadataInputMethod === 'form' && formSamples.length > 0) {
-        // TSV long format
-        const tsvLines = ['sample_alias\tmetadata_key\tvalue'];
-
-        for (const sample of formSamples) {
+      } else if (metadataInputMethod === 'form' && enteredSamples.length > 0) {
+        // Form samples as TSV long format. Written by d3-dsv, which quotes a value
+        // holding a tab, newline or quote: joined by hand, a newline in a description
+        // cut it short and a tab shifted the columns.
+        const rows = [['sample_alias', 'metadata_key', 'value']];
+        for (const sample of enteredSamples) {
           for (const [key, value] of Object.entries(sample)) {
             if (value !== undefined && value !== null && value !== '' && key !== 'additional_metadata' && key !== 'assembly_filenames') {
-              tsvLines.push(`${sample.sample_alias}\t${key}\t${value}`);
+              rows.push([sample.sample_alias, key, String(value)]);
             }
           }
         }
 
-        const tsvContent = tsvLines.join('\n');
+        const tsvContent = tsvFormatRows(rows);
         const tsvBlob = new Blob([tsvContent], { type: 'text/tab-separated-values' });
         const tsvFile = new File([tsvBlob], 'metadata.tsv', { type: 'text/tab-separated-values' });
         form.append('metadata', tsvFile);
@@ -330,12 +358,15 @@ export default function ContributePage() {
                       Next
                     </Button>
                   ) : (
-                    <Button key="submit-btn" type="submit" disabled={submitting}>{submitting ? 'Submitting...' : 'Submit'}</Button>
+                    <Button key="submit-btn" type="submit" disabled={submitting || metadataBlocker !== null}>{submitting ? 'Submitting...' : 'Submit'}</Button>
                   )}
                 </div>
                 <Button key="reset-btn" type="button" variant="ghost" onClick={(e) => { e.preventDefault(); setName(''); setInstitute(''); setEmail(''); setDescription(''); setAssembly(null); setAssemblyTooLarge(false); setMetadataFile(null); setFormSamples([]); setMetadataInputMethod('form'); setValidationResult(null); setStep(1); if (assembliesInputRef.current) assembliesInputRef.current.value = ''; if (metadataInputRef.current) metadataInputRef.current.value = ''; }}>Reset</Button>
               </div>
 
+              {step === 3 && metadataBlocker && (
+                <p className="text-sm text-destructive" role="status">{metadataBlocker}</p>
+              )}
               {statusMessage && <div className="text-sm text-muted-foreground">{statusMessage}</div>}
             </form>
         </div>

@@ -12,7 +12,8 @@ export const STATS_SAMPLES_HIERARCHY_NAMESPACE = 'statistics:samples:hierarchy';
 // (`stats:global:v2:…`) or these globs silently stop matching.
 export const STATS_CACHE_PATTERNS = [
     `${STATS_GLOBAL_NAMESPACE}:*`,
-    'stats:gcfs:global',
+    // A glob: the route's key is versioned (stats:gcfs:global:v3).
+    'stats:gcfs:global*',
     // Also covers the nested hierarchy namespace.
     `${STATS_SAMPLES_NAMESPACE}:*`,
     'statistics:genomes:*',

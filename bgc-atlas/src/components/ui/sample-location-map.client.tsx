@@ -5,6 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import { BASEMAP_ATTRIBUTION, BASEMAP_SUBDOMAINS, BASEMAP_URL } from '@/lib/basemap';
+import { textElement } from '@/lib/utils/text-element';
 
 interface Props {
   latitude: number;
@@ -54,7 +55,9 @@ export default function SampleLocationMapClient({ latitude, longitude, label, he
       }),
     }).addTo(map);
 
-    if (label) marker.bindTooltip(label, { direction: 'top', offset: [0, -8] });
+    // An element, not the string: Leaflet assigns a string tooltip to innerHTML, and the
+    // label is a submitter-written sample name.
+    if (label) marker.bindTooltip(textElement(label), { direction: 'top', offset: [0, -8] });
 
     // Inside a collapsed/animating expander the container can measure 0×0; re-measure on resize.
     // invalidateSize() keeps the center, so no setView (which would fight a pan).

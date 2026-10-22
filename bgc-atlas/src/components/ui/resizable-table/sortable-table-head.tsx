@@ -140,7 +140,10 @@ export function SortableTableHead({
               {column.headerControl()}
             </span>
           )}
-          {/* Lifted above the resize handle, which would otherwise swallow the hover. */}
+          {/* Lifted above the resize handle, which would otherwise swallow the hover and
+              the tap that opens it on a phone. A tap here cannot sort, resize or drag: those
+              handlers are on siblings. No stopPropagation: tap-outside dismiss and Escape
+              listen on the document. */}
           {column.headerTooltip && (
             <span className="relative z-30 flex shrink-0">
               <InfoTooltip content={column.headerTooltip} />

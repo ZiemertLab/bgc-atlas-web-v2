@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { addExportJob } from '@/lib/queue';
@@ -6,6 +7,7 @@ import { getClientIpOrNull } from '@/lib/client-ip';
 import { checkRateLimit, exportRateLimit, getClientIp } from '@/lib/rate-limit';
 import { GCF_GBK_EXPORT_MAX_MEMBERS, isValidExportEmail } from '@/lib/gcf/export-limits';
 import { serverError } from '@/lib/api/errors';
+import { sendExportReadyEmail } from '@/lib/mail/export-notification';
 
 const CACHE_DURATION_MS = 60 * 60 * 1000;
 
@@ -112,33 +114,68 @@ export async function POST(
       orderBy: { created_at: 'desc' },
     });
 
+    // A finished export is mailed to this reader; one still running records the
+    // address if it has none yet. The record holds one address, so a second reader
+    // is told to watch the job page instead.
+    const what = gcf.name || gcf.id;
     if (recentExport && recentExport.status === 'completed') {
       console.log(`Reusing recent export ${recentExport.id} for GCF ${gcfId}`);
+      let emailed = false;
+      if (userEmail) {
+        try {
+          await sendExportReadyEmail(
+            { to: userEmail, exportJobId: recentExport.id, what },
+            recentExport.total_bgcs ?? 0,
+            recentExport.missing_files ?? 0,
+          );
+          emailed = true;
+        } catch (error) {
+          console.error(`Ready mail for reused export ${recentExport.id} failed:`, error);
+        }
+      }
       return NextResponse.json({
         success: true,
         exportJobId: recentExport.id,
         queueJobId: recentExport.job_id,
         status: recentExport.status,
         reused: true,
+        ...(userEmail ? { emailed } : {}),
       });
     }
 
     if (recentExport && (recentExport.status === 'pending' || recentExport.status === 'running')) {
       console.log(`Export already in progress ${recentExport.id} for GCF ${gcfId}`);
+      let emailRecorded: boolean | undefined;
+      if (userEmail) {
+        const { count } = await prisma.gcfExportJob.updateMany({
+          where: { id: recentExport.id, OR: [{ user_email: null }, { user_email: '' }, { user_email: userEmail }] },
+          data: { user_email: userEmail },
+        });
+        emailRecorded = count > 0;
+      }
       return NextResponse.json({
         success: true,
         exportJobId: recentExport.id,
         queueJobId: recentExport.job_id,
         status: recentExport.status,
         existing: true,
+        ...(emailRecorded === false
+          ? { emailRecorded, message: 'This export was already requested by someone else, so no email will be sent; '
+              + 'the job page shows when the zip is ready.' }
+          : emailRecorded ? { emailRecorded } : {}),
       });
     }
 
     const clientIp = getClientIpOrNull(request);
 
+    // The record gets its final job_id up front (the queue keys export jobs on the
+    // export's own id). job_id is UNIQUE, so a placeholder left behind by a failed
+    // queue call would block every later export.
+    const exportJobId = randomUUID();
     const exportJob = await prisma.gcfExportJob.create({
       data: {
-        job_id: '',
+        id: exportJobId,
+        job_id: exportJobId,
         gcf_id: gcfId,
         status: 'pending',
         user_email: userEmail || null,
@@ -154,12 +191,16 @@ export async function POST(
       userEmail,
     };
 
-    const queueJob = await addExportJob(jobData);
-
-    await prisma.gcfExportJob.update({
-      where: { id: exportJob.id },
-      data: { job_id: queueJob.id || 'unknown' },
-    });
+    let queueJob;
+    try {
+      queueJob = await addExportJob(jobData);
+    } catch (queueError) {
+      await prisma.gcfExportJob.update({
+        where: { id: exportJobId },
+        data: { status: 'failed', error_message: 'Could not queue the export', completed_at: new Date() },
+      });
+      throw queueError;
+    }
 
     console.log(`Created export job ${exportJob.id} for GCF ${gcf.name || gcfId}`);
 

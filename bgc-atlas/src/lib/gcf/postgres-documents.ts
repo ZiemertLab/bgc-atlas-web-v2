@@ -7,6 +7,7 @@
 import { Prisma } from '@prisma/client';
 
 import prisma from '@/lib/prisma';
+import { pickShareFields, shareFieldSelect, type ShareFieldRow } from '@/lib/gcf/share-columns';
 
 /** Guard against a pathological result set. The entity export raises it, since a
  *  large download legitimately names thousands of unlisted families. */
@@ -22,7 +23,7 @@ export async function fetchGcfDocumentsFromPostgres(
 
   // Not joined to `gcf_summary`: it is an aggregating view and makes this take seconds.
   // No `bgcs` either: narrowing it from a subquery sorts the 16.5M-row corpus.
-  const rows = await prisma.$queryRaw<Array<{
+  const rows = await prisma.$queryRaw<Array<ShareFieldRow & {
     id: string; name: string; pet_name: string | null; family_class: string | null;
     listed: boolean; n_bgc: number; cluster_method: string | null;
     product_category_distribution: unknown; biome_l1: unknown; biome_l2: unknown;
@@ -35,7 +36,10 @@ export async function fetchGcfDocumentsFromPostgres(
       d.biome_distribution_l1 AS biome_l1, d.biome_distribution_l2 AS biome_l2,
       d.biome_distribution_l3 AS biome_l3, d.biome_distribution_l4 AS biome_l4,
       d.biome_distribution_l5 AS biome_l5,
-      t.domain_distribution, t.rank_distributions
+      t.domain_distribution, t.rank_distributions,
+      -- Family share fields under their gcf_browse names, so an unlisted
+      -- family's Property Search row carries them like an indexed one.
+      ${shareFieldSelect('d')}
     FROM gcfs g
     LEFT JOIN gcf_distributions_mv d ON d.gcf_id = g.id
     LEFT JOIN gcf_taxonomy_distribution_mv t ON t.gcf_id = g.id
@@ -58,6 +62,8 @@ export async function fetchGcfDocumentsFromPostgres(
     biome_distribution_l5: row.biome_l5 ?? {},
     taxonomy_distribution: row.domain_distribution ?? {},
     taxonomy_distributions: row.rank_distributions ?? {},
+    // NULL without an MV row; mapShareFields then sets none of them.
+    ...pickShareFields(row),
     // product_type_distribution, assembly_count and length stats exist only in the
     // index; an absent field renders as "—".
   } satisfies Document));

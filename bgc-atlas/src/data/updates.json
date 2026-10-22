@@ -2,7 +2,7 @@
     {
         "date": "2026-10-14",
         "title": "Gene cluster families corrected",
-        "description": "The families were recomputed on the same BGCs with a corrected containment step (data release R2.0-beta.6): a BGC now joins a family by sequence containment only when 80% of its whole length matches a member, where before 80% of one 10 kb piece was enough. 629,872 listed families, 89.4% of BGCs in one. Family names carry the new tag (GCF-v2b6-000042). Names of the 13 October families (GCF-v2b5-…) no longer resolve; links to earlier families still show where their members went.",
+        "description": "The gene cluster families were corrected and recomputed on the same BGCs (data release R2.0-beta.6): 629,872 listed families, 89.4% of BGCs in one. Family names carry the new tag (GCF-v2b6-000042). Names of the 13 October families (GCF-v2b5-…) no longer resolve; links to earlier families still show where their members went.",
         "type": "major"
     },
     {

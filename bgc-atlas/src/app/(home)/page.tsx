@@ -7,6 +7,7 @@ import { MainLayout } from '@/components/layout/main-layout';
 import { useStatistics } from '@/lib/hooks/use-statistics';
 import { StatLinkRow } from '@/components/ui/stat-leader-row';
 import { SampleMapDots } from '@/components/ui/sample-map-dots';
+import { METAGENOME_AREA_LINKS } from '@/lib/utils/map-area-links';
 import { MAP_WORLD_WIDTH } from '@/components/ui/map-layout';
 import { getRecentUpdates } from '@/lib/updates';
 import { withBase } from '@/lib/basePath';
@@ -145,6 +146,7 @@ export default function Home() {
               {mounted ? (
                 <SampleMapDots
                   staticManifestUrl="/data/map-samples.manifest.json"
+                  areaLinks={METAGENOME_AREA_LINKS}
                   blockClassName="w-full"
                 />
               ) : (

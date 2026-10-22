@@ -2,50 +2,19 @@ import { Prisma } from '@prisma/client';
 
 import prisma from '@/lib/prisma';
 import { getOrSetCache } from '@/lib/cache';
+import { bgcFacetDocs } from '@/lib/opensearch/client';
+import { nullableString, sampleMapRows, type SampleMapRow } from '@/lib/map/sample-map-rows';
+import { getHitBgcIds, type SequenceHitFilters } from './database';
 
-// ~0.5 s warm but ~120 s cold on a large search (one PK lookup chain per hit BGC), hence the
-// cache and the worker warming it. Going via sample_map_view/assembly_samples_mv is slower.
+// BGC -> sample -> coordinates is read from the bgc_facets and sample_browse indexes. As a
+// Postgres join (one primary-key lookup chain per hit BGC) it was ~0.5 s warm but ~120 s cold
+// on a large search; it survives only for ids an index lacks. Results are cached, and the
+// queue worker warms the cache after a search completes.
 
-export interface SequenceMapFilters {
-  minIdentity?: number;
-  minCoverage?: number;
-  queryFrom?: number;
-  queryTo?: number;
-}
+/** The table's filters, the contig of a selected locus (queryId) among them. */
+export type SequenceMapFilters = SequenceHitFilters;
 
-export interface SequenceMapSampleRow {
-  id: string;
-  externalId: string | null;
-  name: string | null;
-  location: string | null;
-  latitude?: number;
-  longitude?: number;
-  environmentBiome: string | null;
-  goldEcosystemPath: string | null;
-  environmentMaterial: string | null;
-  environmentFeature: string | null;
-  hostScientificName: string | null;
-  dataSourceNames: string[];
-  studyTitles: string[];
-  assemblyCount: number;
-  bgcCount: number;
-  sourceTypes: string[];
-}
-
-interface MapRow {
-  id: string;
-  external_id: string | null;
-  name: string | null;
-  latitude: Prisma.Decimal | number | null;
-  longitude: Prisma.Decimal | number | null;
-  geographic_location: string | null;
-  environment_biome: string | null;
-  gold_ecosystem_path: string | null;
-  environment_feature: string | null;
-  environment_material: string | null;
-  host_scientific_name: string | null;
-  bgc_hits: number;
-}
+export type SequenceMapSampleRow = SampleMapRow;
 
 export const MAX_MAP_LIMIT = 5000;
 
@@ -58,86 +27,48 @@ function cacheKey(sessionId: string, filters: SequenceMapFilters): string {
     filters.minCoverage ?? '',
     filters.queryFrom ?? '',
     filters.queryTo ?? '',
+    filters.queryId ?? '',
   ].join('|');
   return `seqsearch:samplemap:v1:${sessionId}:${parts}`;
+}
+
+/** BGC -> sample for the hit BGCs: from the index, the join only for what it lacks. */
+async function sampleIdsForBgcs(bgcIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    for (const [bgcId, doc] of await bgcFacetDocs(bgcIds, ['sample_id'])) {
+      const sampleId = nullableString(doc.sample_id);
+      if (sampleId) out.set(bgcId, sampleId);
+    }
+  } catch (error) {
+    console.warn(`Could not resolve ${bgcIds.length} BGC samples from OpenSearch; using Postgres:`, error);
+  }
+  const missing = bgcIds.filter((id) => !out.has(id));
+  if (missing.length) {
+    const rows = await prisma.$queryRaw<Array<{ bgc_id: string; sample_id: string }>>(Prisma.sql`
+      SELECT b.id::text AS bgc_id, sa.sample_id::text AS sample_id
+      FROM bgcs b
+      JOIN sample_assemblies sa ON sa.assembly_id = b.assembly
+      WHERE b.id = ANY(${missing}::uuid[])
+    `);
+    for (const row of rows) out.set(row.bgc_id, row.sample_id);
+  }
+  return out;
 }
 
 async function runQuery(
   sessionId: string,
   filters: SequenceMapFilters,
 ): Promise<SequenceMapSampleRow[]> {
-  const conditions: Prisma.Sql[] = [
-    Prisma.sql`r.session_id = ${sessionId}`,
-    Prisma.sql`r.bgc_id IS NOT NULL`,
-  ];
-  if (filters.minIdentity !== undefined) conditions.push(Prisma.sql`r.identity >= ${filters.minIdentity}`);
-  if (filters.minCoverage !== undefined) conditions.push(Prisma.sql`r.coverage >= ${filters.minCoverage}`);
-  if (filters.queryFrom !== undefined && filters.queryTo !== undefined) {
-    // Minus-strand hits store start > end, hence least/greatest.
-    conditions.push(Prisma.sql`
-      least(r.query_start, r.query_end) <= ${filters.queryTo}
-      AND greatest(r.query_start, r.query_end) >= ${filters.queryFrom}
-    `);
-  }
+  // The same filters the results table applies, so the map describes the set on screen.
+  // Only the session's own rows come from Postgres; the BGC -> sample -> coordinates walk
+  // is keyed index reads. An assembly belongs to exactly one sample, so the index's single
+  // sample_id per BGC is the join's answer, not a simplification of it.
+  const bgcSamples = await sampleIdsForBgcs(await getHitBgcIds(sessionId, filters));
 
-  // Inner joins with the coordinate filter inside: the outer-join-then-count form takes ~32 s.
-  const rows = await prisma.$queryRaw<MapRow[]>(Prisma.sql`
-    WITH hit_bgcs AS (
-      SELECT DISTINCT r.bgc_id
-      FROM sequence_search_results r
-      WHERE ${Prisma.join(conditions, ' AND ')}
-    )
-    SELECT
-      s.id::text AS id,
-      s.external_id,
-      s.name,
-      s.latitude,
-      s.longitude,
-      s.geographic_location,
-      s.environment_biome,
-      s.gold_ecosystem_path,
-      s.environment_feature,
-      s.environment_material,
-      s.host_scientific_name,
-      count(DISTINCT h.bgc_id)::int AS bgc_hits
-    FROM hit_bgcs h
-    JOIN bgcs b               ON b.id = h.bgc_id
-    JOIN assemblies a         ON a.id = b.assembly
-    JOIN sample_assemblies sa ON sa.assembly_id = a.id
-    JOIN samples s            ON s.id = sa.sample_id
-    WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
-    GROUP BY s.id, s.external_id, s.name, s.latitude, s.longitude,
-             s.geographic_location, s.environment_biome, s.gold_ecosystem_path,
-             s.environment_feature, s.environment_material, s.host_scientific_name
-    LIMIT ${MAX_MAP_LIMIT}
-  `);
-
-  return rows.map((row) => {
-    const latitude = row.latitude === null || row.latitude === undefined ? undefined : Number(row.latitude);
-    const longitude = row.longitude === null || row.longitude === undefined ? undefined : Number(row.longitude);
-    return {
-      id: row.id,
-      externalId: row.external_id,
-      name: row.name,
-      location:
-        row.geographic_location ??
-        (latitude !== undefined && longitude !== undefined
-          ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-          : null),
-      latitude,
-      longitude,
-      environmentBiome: row.environment_biome,
-      goldEcosystemPath: row.gold_ecosystem_path,
-      environmentFeature: row.environment_feature,
-      environmentMaterial: row.environment_material,
-      hostScientificName: row.host_scientific_name,
-      dataSourceNames: [] as string[],
-      studyTitles: [] as string[],
-      assemblyCount: 0,
-      bgcCount: row.bgc_hits,
-      sourceTypes: [] as string[],
-    };
-  });
+  const bgcHits = new Map<string, number>();
+  for (const sampleId of bgcSamples.values()) bgcHits.set(sampleId, (bgcHits.get(sampleId) ?? 0) + 1);
+  return sampleMapRows(bgcHits, MAX_MAP_LIMIT);
 }
 
 export function getSequenceSampleMap(

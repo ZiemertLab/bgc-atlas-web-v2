@@ -1,4 +1,15 @@
 import type { FilterFieldDefinition, FilterOperator, FilterFieldType } from '@/lib/filters/types';
+import {
+  DEFAULT_SHARE_THRESHOLD,
+  ECO_SHARE_LEVELS,
+  ECO_SHARE_THRESHOLDS,
+  PRODUCT_SHARE_FIELD,
+  PRODUCT_SHARE_THRESHOLDS,
+  PRODUCT_TYPE_VOCAB,
+  SHARE_OPERATORS,
+  ecoShareFieldId,
+  ecoVocabField,
+} from '@/lib/filters/share-fields';
 
 const baseOperators: Record<FilterFieldType, FilterOperator[]> = {
   text: ['contains', 'not_contains', 'equals', 'not_equals', 'starts_with', 'ends_with'],
@@ -53,7 +64,7 @@ export const bgcFilterFields = withDefaults([
   { id: 'gcf', label: 'GCF ID', type: 'text' },
   { id: 'productCategory', label: 'Category', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
   { id: 'productType', label: 'Product', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
-  // No "Unknown" option: neither backend can honour it, so offering it would be offering a 400.
+  // No "Unknown" option: /api/bgcs refuses ?completeness=unknown, so offering it would be offering a 400.
   { id: 'completeness', label: 'Completeness', type: 'select', options: [
     { label: 'Complete', value: 'complete' },
     { label: 'Partial', value: 'partial' },
@@ -118,8 +129,25 @@ export const studyFilterFields = withDefaults([
 export const gcfFilterFields = withDefaults([
   { id: 'id', label: 'GCF ID', type: 'text' },
   { id: 'name', label: 'Name', type: 'text' },
-  { id: 'productType', label: 'Category', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
-  { id: 'productClass', label: 'Product', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
+  // Matches when ANY member carries the category. The share of members is the
+  // Category control in the toolbar (?category=&categoryMinShare=).
+  { id: 'productType', label: 'Category (any member)', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
+  // Share of members carrying an antiSMASH product type, at a threshold the row
+  // picks (lib/filters/share-fields.ts). Replaces the `productClass` text field,
+  // which matched a family with one such member in 12,278; links that used it
+  // are rewritten on read into this field at "any member"
+  // (lib/filters/legacy-conditions.ts). Raw antiSMASH types, ungrouped.
+  {
+    id: PRODUCT_SHARE_FIELD,
+    label: 'Product',
+    type: 'select',
+    description: 'Share of members carrying this antiSMASH product type',
+    dynamic: true,
+    vocabField: PRODUCT_TYPE_VOCAB,
+    allowedOperators: SHARE_OPERATORS,
+    defaultOperator: 'equals',
+    share: { thresholds: PRODUCT_SHARE_THRESHOLDS, defaultThreshold: DEFAULT_SHARE_THRESHOLD },
+  },
   { id: 'biome', label: 'Biome', type: 'text' },
   { id: 'taxonomy', label: 'Taxonomy', type: 'text', allowedOperators: ['contains', 'equals', 'starts_with', 'ends_with'] },
   { id: 'memberBgcCount', label: 'Member BGCs', type: 'number' },
@@ -144,9 +172,23 @@ export const gcfFilterFields = withDefaults([
   { id: 'domPhylum', label: 'Dominant phylum', type: 'text' },
   { id: 'domPhylumPct', label: 'Dominant phylum share (%)', type: 'number', description: 'Percent of members in the dominant phylum (0\u2013100)' },
   // Level 1 is the broad ecosystem; level 3 is where Marine, Soil etc. live. Both shares are 0-100.
-  { id: 'ecosystemSpecificity', label: 'Ecosystem specificity L1 (%)', type: 'number', description: 'Share of the largest top-level GOLD ecosystem (0\u2013100)' },
+  { id: 'ecosystemSpecificity', label: 'Ecosystem specificity L1 (%)', type: 'number', description: 'Percent of members with a top-level GOLD ecosystem that are in the largest one (0\u2013100)' },
   { id: 'domEcosystem', label: 'Dominant ecosystem (L3)', type: 'text', description: 'e.g. Marine, Freshwater, Soil, Digestive system' },
-  { id: 'domEcosystemPct', label: 'Dominant ecosystem share (%)', type: 'number', description: 'Percent of members in that level-3 ecosystem (0\u2013100)' },
+  { id: 'domEcosystemPct', label: 'Dominant ecosystem share (%)', type: 'number', description: 'Percent of members with a level-3 ecosystem that are in the dominant one (0\u2013100)' },
+  // Share of the members WITH an ecosystem at level n that are in this one
+  // (lib/filters/share-fields.ts). One field per level: each level has its own vocabulary and
+  // threshold columns. "Any member" (0) reads eco_l<n>_any.
+  ...ECO_SHARE_LEVELS.map((level) => ({
+    id: ecoShareFieldId(level),
+    label: `Ecosystem share (L${level})`,
+    type: 'select' as const,
+    description: `Share of members with a level-${level} GOLD ecosystem that are in this one`,
+    dynamic: true,
+    vocabField: ecoVocabField(level),
+    allowedOperators: SHARE_OPERATORS,
+    defaultOperator: 'equals' as const,
+    share: { thresholds: ECO_SHARE_THRESHOLDS, defaultThreshold: DEFAULT_SHARE_THRESHOLD },
+  })),
   // The id stays `avgScore` (a URL key), but the column is avg_distance: lower is better.
   { id: 'avgScore', label: 'Avg Distance (lower = closer)', type: 'number' },
 ]);

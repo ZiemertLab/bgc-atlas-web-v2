@@ -180,12 +180,26 @@ def publishable_copy(db_path: Path, scratch: Path, run_dir: str) -> Path:
         if 0.4 not in thresholds:
             raise SystemExit(f"{db_path}: no clustering at 0.4 ({sorted(thresholds)}); fix PUBLISHED_PROG_PARAMS")
         before = con.execute("SELECT id, prog_params FROM run ORDER BY id").fetchall()
+        # Without secure_delete the old row stays in the page's free space, readable with `strings`: the
+        # 2026-10-12 fix and the first R2.0-beta.6 cut shipped it that way.
+        con.execute("PRAGMA secure_delete = ON")
         con.execute("UPDATE run SET prog_params = ?", (PUBLISHED_PROG_PARAMS,))
         con.commit()
         if con.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise SystemExit(f"{dst}: quick_check failed after the prog_params update")
     finally:
         con.close()
+    # The bytes, not the row: nothing of the old values may be left anywhere in the file.
+    needles = {v.encode() for _, v in before if v and v != PUBLISHED_PROG_PARAMS}
+    if needles:
+        longest = max(len(n) for n in needles)
+        tail = b""
+        with dst.open("rb") as fh:
+            while chunk := fh.read(1 << 24):
+                buf = tail + chunk
+                if any(n in buf for n in needles):
+                    raise SystemExit(f"{dst}: the old run.prog_params bytes are still in the file")
+                tail = buf[-longest:]
     print(f"   run.prog_params of {len(before)} run(s) -> {PUBLISHED_PROG_PARAMS!r} "
           f"(copy {time.time() - t0:.0f}s)", flush=True)
     return dst

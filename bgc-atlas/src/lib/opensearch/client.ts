@@ -13,6 +13,8 @@ import {
   intervalForZoom, normalizeBbox, GEO_LEGEND_SIZE, GEO_MAX_CELLS, GEO_OTHER_KEY,
 } from '@/lib/opensearch/geo-grid';
 import { resolveGcfNames } from '@/lib/opensearch/gcf-name-resolver';
+import { ECO_SHARE_LEVELS, PRODUCT_TYPE_VOCAB, ecoVocabField } from '@/lib/filters/share-fields';
+import { ecoAnyIndexedFresh } from '@/lib/opensearch/gcf-browse-fields';
 import { aggSize, slicePage, pageIsCapped, type AggBucket } from '@/lib/opensearch/entity-paging';
 import { demotePlaceholders } from '@/lib/opensearch/facet-placeholders';
 import { KNOWNCLUSTER_MIN_FAMILY_COVERAGE, KNOWNCLUSTER_MIN_SIMILARITY } from '@/lib/known-cluster-thresholds';
@@ -59,6 +61,46 @@ export async function osFetch(index: string, body: unknown): Promise<Record<stri
     throw new Error(`OpenSearch ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   return res.json();
+}
+
+const MGET_CHUNK = 2000;
+
+/**
+ * Keyed document fetch: the `_source` of each found id, in chunks so a 15k-id request stays
+ * a sane body. Missing ids are absent from the map -- the caller decides what a miss means.
+ */
+async function osMget(
+  index: string,
+  ids: string[],
+  fields: string[],
+): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  for (let i = 0; i < ids.length; i += MGET_CHUNK) {
+    const res = await osRequest(`/${index}/_mget?_source=${fields.join(',')}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids.slice(i, i + MGET_CHUNK) }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      throw new Error(`OpenSearch ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    }
+    const body = (await res.json()) as { docs?: { _id: string; found?: boolean; _source?: Record<string, unknown> }[] };
+    for (const doc of body.docs ?? []) {
+      if (doc.found && doc._source) out.set(doc._id, doc._source);
+    }
+  }
+  return out;
+}
+
+/** bgc_facets documents by BGC uuid (the index's _id). */
+export function bgcFacetDocs(bgcIds: string[], fields: string[]) {
+  return osMget(INDEX, bgcIds, fields);
+}
+
+/** sample_browse documents by sample uuid (the index's _id). */
+export function sampleBrowseDocs(sampleIds: string[], fields: string[]) {
+  return osMget(SAMPLE_BROWSE_INDEX, sampleIds, fields);
 }
 
 /**
@@ -546,8 +588,41 @@ export async function countMatches(group: FilterGroup | null): Promise<number> {
   return facetsCount(await buildQuery(group));
 }
 
+/** The family filters' value pickers (lib/filters/share-fields.ts), served from
+ *  gcf_browse rather than the BGC vocabulary index: a count there is BGCs, and
+ *  for ecosystems the useful vocabulary is per LEVEL. Product: every type any
+ *  listed family carries. Ecosystem at level n: every value any member has
+ *  (eco_l<n>_any; <= ~290 per level), or, on an index without those lists, the
+ *  values that reach 10 % somewhere. Counts are families. Tiny vocabularies,
+ *  so the whole set is aggregated and matched by substring here, which
+ *  lets "lanthi" find all five classes. */
+const GCF_VOCAB_FIELDS: Record<string, (anyIndexed: boolean) => string> = {
+  [PRODUCT_TYPE_VOCAB]: () => 'product_terms',
+  // Every ecosystem any member has, once the index carries eco_l<n>_any (share
+  // fields part 2); until then the >= 10 % list, which every threshold but
+  // "any member" can match.
+  ...Object.fromEntries(ECO_SHARE_LEVELS.map((level) => [
+    ecoVocabField(level),
+    (anyIndexed: boolean) => (anyIndexed ? `eco_l${level}_any` : `eco_l${level}_ge10`),
+  ])),
+};
+
+async function gcfVocabValues(indexField: string, prefix: string, size: number): Promise<FacetBucket[]> {
+  const r = await osFetch(GCF_BROWSE_INDEX, {
+    size: 0,
+    aggs: { v: { terms: { field: indexField, size: 2000 } } },
+  }) as { aggregations?: { v?: { buckets?: { key: unknown; doc_count?: number }[] } } };
+  const needle = prefix.trim().toLowerCase();
+  return (r.aggregations?.v?.buckets ?? [])
+    .map((b) => ({ value: String(b.key), count: b.doc_count ?? 0 }))
+    .filter((b) => !needle || b.value.toLowerCase().includes(needle))
+    .slice(0, Math.max(1, size));
+}
+
 export async function facetValues(field: string, prefix = '', size = 20): Promise<FacetBucket[]> {
   if (field === 'gcf_id') return gcfFacetValues(prefix, size);
+  const gcfVocab = GCF_VOCAB_FIELDS[field];
+  if (gcfVocab) return gcfVocabValues(gcfVocab(await ecoAnyIndexedFresh()), prefix, size);
   if (!facetSet.has(field)) throw new Error(`not a facet field: ${field}`);
   const filter: unknown[] = [{ term: { field } }];
   // Edge-ngram `match` finds a prefix of any word but ignores single characters
@@ -765,6 +840,41 @@ export async function geoCount(group: FilterGroup | null): Promise<number> {
     },
   }) as { hits?: { total?: { value?: number } } };
   return r.hits?.total?.value ?? 0;
+}
+
+/**
+ * Matching geolocated BGCs per sample, or null when they come from more than `limit` samples
+ * — the caller then maps the set as a grid instead.
+ *
+ * Gathering `limit` buckets costs ~1.4 s on the whole corpus, so a cardinality estimate
+ * (~0.5 s) turns broad queries away first. The estimate is near-exact below its 40k precision
+ * threshold, and the terms agg's `sum_other_doc_count` is the exact check: a non-zero
+ * remainder means some sample did not fit.
+ */
+export async function geoSampleCounts(group: FilterGroup | null, limit: number): Promise<Map<string, number> | null> {
+  const query = {
+    bool: {
+      filter: [
+        await buildQuery(group),
+        { exists: { field: 'latitude' } },
+        { exists: { field: 'longitude' } },
+      ],
+    },
+  };
+
+  const estimate = await osFetch(INDEX, {
+    size: 0, query,
+    aggs: { n: { cardinality: { field: 'sample_id', precision_threshold: 40000 } } },
+  }) as { aggregations?: { n?: { value?: number } } };
+  if ((estimate.aggregations?.n?.value ?? 0) > limit) return null;
+
+  const r = await osFetch(INDEX, {
+    size: 0, query,
+    aggs: { s: { terms: { field: 'sample_id', size: limit } } },
+  }) as { aggregations?: { s?: { buckets?: { key: string; doc_count: number }[]; sum_other_doc_count?: number } } };
+  const agg = r.aggregations?.s;
+  if ((agg?.sum_other_doc_count ?? 0) > 0) return null;
+  return new Map((agg?.buckets ?? []).map((b) => [String(b.key), b.doc_count]));
 }
 
 /** Nested lat/lon histogram; `min_doc_count: 1` keeps a global 0.25° grid at ~12k cells. */

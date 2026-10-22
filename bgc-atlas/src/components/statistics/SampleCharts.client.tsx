@@ -16,6 +16,7 @@ import type { SampleChartBucket, SampleGroupByOption, UseSampleStatsParams } fro
 import { useSampleStats, useSampleHierarchy } from '@/lib/hooks/use-sample-stats';
 import { useDebouncedCallback } from '@/lib/utils/debounce';
 import { useQuery } from '@tanstack/react-query';
+import { isFilterRefusal } from '@/lib/api-client';
 import { withBase } from '@/lib/basePath';
 import {
   getGOLDColorHex, getEcosystemChartColorHex, goldBarLabels, goldPathTitle,
@@ -280,6 +281,10 @@ const SampleChartsBody = ({
       </div>
     );
   }
+
+  // A refused filter is already explained in the list's results area; repeating it
+  // here as a failure would show the refusal twice.
+  if (isFilterRefusal(error)) return null;
 
   if (error || (barsActive && !useStatic && !response?.success)) {
     return (

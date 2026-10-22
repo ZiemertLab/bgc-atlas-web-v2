@@ -20,6 +20,8 @@ interface JobMeta {
   progress?: number;
   errorMessage?: string | null;
   createdAt?: string;
+  /** When a worker first took the job; null while it is queued. */
+  startedAt?: string | null;
   /** Parsed from DIAMOND's log; absent before the first block. */
   diamond?: {
     queryBlock: number;
@@ -38,7 +40,7 @@ export default function SearchResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -84,27 +86,26 @@ export default function SearchResultsPage() {
       }
     };
 
-    (async () => {
-      const first = await fetchOnce();
-      if (first === 'continue' && active && !pollRef.current) {
-        pollRef.current = setInterval(async () => {
-          const r = await fetchOnce();
-          if (r === 'stop' && pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        }, 2000);
-      }
-    })();
+    // One request at a time: the next poll is scheduled only once the last has
+    // answered. A fixed interval let a slow poll overlap the next, so a late
+    // "running" could land after "completed" had already stopped polling and put the
+    // finished page back on its progress bar, for good.
+    const poll = async () => {
+      const r = await fetchOnce();
+      if (r === 'continue' && active) pollRef.current = setTimeout(poll, 2000);
+    };
+    poll();
 
     return () => {
       active = false;
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (pollRef.current) clearTimeout(pollRef.current);
     };
   }, [jobId]);
 
-  // started_at is re-stamped on every progress update, so created_at measures the run.
-  const startedMs = meta?.createdAt ? new Date(meta.createdAt).getTime() : null;
+  // From when a worker took the job, so queued time does not count as running. started_at is
+  // stamped once; created_at stands in for records that predate that.
+  const startedAt = meta?.startedAt ?? meta?.createdAt;
+  const startedMs = startedAt ? new Date(startedAt).getTime() : null;
   const [elapsed, setElapsed] = useState<number | null>(null);
   useEffect(() => {
     if (startedMs === null || (meta?.status !== 'running' && meta?.status !== 'pending')) {

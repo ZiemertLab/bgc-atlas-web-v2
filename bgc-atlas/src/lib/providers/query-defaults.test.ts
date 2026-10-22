@@ -17,6 +17,17 @@ describe('react-query defaults', () => {
     expect(retry(0, new TypeError('Failed to fetch'))).toBe(true);
   });
 
+  it('does not retry a 503 the server wrote for the reader', () => {
+    // /api/bgcs answers an over-full or over-long SQL fallback this way. Retrying at
+    // once re-runs a 45 s query that was just cut off, or queues again for a full
+    // slot: measured, the reader waited 34 s, three 10 s waits plus backoff, for a
+    // message that says "try again in a minute".
+    const busy = JSON.stringify({ success: false, error: 'The search index is temporarily unavailable…', userFacing: true });
+    expect(retry(0, new ApiError(503, 'The search index is temporarily unavailable…', busy))).toBe(false);
+    // An ordinary 503 is still a transient failure.
+    expect(retry(0, new ApiError(503, 'index unavailable', JSON.stringify({ error: 'x' })))).toBe(true);
+  });
+
   it('still gives up after two attempts', () => {
     expect(retry(2, new ApiError(500, 'boom'))).toBe(false);
   });

@@ -12,6 +12,7 @@ vi.mock('@/lib/rate-limit', () => ({
     ? { success: true, limit: 20, remaining: 4, reset: 0 }
     : { success: false, limit: 20, remaining: 0, reset: 0, error: 'Rate limit exceeded.' })),
   getClientIp: () => '127.0.0.1',
+  bucketLimitText: () => '20 exports at once, then 1 every 3 minutes',
 }));
 
 import { checkRateLimit } from '@/lib/rate-limit';

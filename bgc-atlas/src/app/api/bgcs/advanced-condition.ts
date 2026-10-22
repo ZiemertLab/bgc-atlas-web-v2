@@ -14,6 +14,8 @@ import {
 import { type FilterCondition } from '@/lib/filters/types';
 
 export const toLike = (value: string) => `%${value.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+/** Same escaping, anchored at the start: "starts with" (free-text search, lib/bgc/search-text.ts). */
+export const toPrefixLike = (value: string) => `${value.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
 
 export const isValidUuid = (id: string) => {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);

@@ -29,14 +29,29 @@ export const REFRESH_TIERS: readonly (readonly string[])[] = [
         'gcf_product_category_distribution_mv',
         'gcf_category_combination_mv',
         'gcf_product_type_matrix_mv',
+        // Reads bgcs + bgc_gcf: members per (family, product), the source of
+        // gcf_distributions_mv.product_type_member_share.
+        'gcf_product_type_member_mv',
         'gcf_route_counts_mv',
+        // Reads bgcs only. Backs the per-assembly # BGCs in the
+        // Samples page Assemblies view (/api/assemblies); missed here, an assembly
+        // loaded since the last build reads 0 BGCs.
+        'assembly_bgc_counts_mv',
     ],
     [
         'bgc_biome_summary_mv',            // the long pole
         'bgc_data_source_counts',
         'bgc_gold_ecosystem_distribution_mv',
         'gcf_gold_ecosystem_distribution_mv',
+        // Reads assembly_samples_mv (tier 1), so it lands after it: each member's GOLD path
+        // via its assembly's first-ranked sample, from which every ecosystem column of
+        // gcf_distributions_mv (tier 3) is built.
+        'gcf_member_ecosystem_mv',
         'study_ecosystem_dist',
+        // The study page's geography, environment and map points; read sample_summary and
+        // sample_parent_key (tier 1).
+        'study_geo_mv',
+        'study_map_points_mv',
         'sample_source_type_counts',
     ],
     [

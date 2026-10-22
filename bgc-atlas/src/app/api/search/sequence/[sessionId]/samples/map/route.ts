@@ -38,6 +38,8 @@ export async function GET(
         minCoverage: numberParam(searchParams.get('minCoverage')),
         queryFrom: numberParam(searchParams.get('queryFrom')),
         queryTo: numberParam(searchParams.get('queryTo')),
+        // The contig a selected locus lies on (see parseHitFilters).
+        queryId: searchParams.get('queryId') || undefined,
       },
       session.status === 'completed',
     );

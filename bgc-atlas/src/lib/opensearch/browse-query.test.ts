@@ -11,6 +11,30 @@ import {
 } from './browse-query';
 
 describe('buildBrowseSearchRequest', () => {
+  it.each([
+    ['class', 'product_category'],
+    ['type', 'product_type'],
+  ])('sorts the /bgcs %s column on %s, not on bgc_id', (sortField, field) => {
+    // The /bgcs column ids are `class` and `type`; unmapped, both fell to bgc_id.
+    for (const order of ['asc', 'desc'] as const) {
+      const request = buildBrowseSearchRequest('bgcs', new URLSearchParams({ sortField, sortOrder: order, limit: '50' }));
+      expect((request.sort as Record<string, unknown>[])[0]).toEqual({ [field]: { order } });
+    }
+  });
+
+  it.each([
+    ['absent', undefined, 50],
+    ['blank', '', 50],
+    ['fractional', '2.5', 2],
+    ['junk', 'abc', 50],
+    ['over the cap', '5000', 200],
+  ])('takes a %s limit as the documented default or a clamped whole number', (_label, limit, size) => {
+    // Number(null) is 0, which a missing ?limit= turned into a one-row page.
+    const params = new URLSearchParams({ sortField: 'length' });
+    if (limit !== undefined) params.set('limit', limit);
+    expect(buildBrowseSearchRequest('bgcs', params).size).toBe(size);
+  });
+
   it('builds sample keyword, range, and deterministic sort clauses', () => {
     const request = buildBrowseSearchRequest('samples', new URLSearchParams({
       search: 'marine',
@@ -162,6 +186,21 @@ describe('buildBrowseSearchRequest', () => {
     expect(JSON.stringify(loose.query)).not.toContain('study_keys');
   });
 
+  it('matches free-text search against study titles', () => {
+    // The search box advertises study; the SQL fallback's search list has the same field.
+    const request = buildBrowseSearchRequest('samples', new URLSearchParams({ search: 'permafrost' }));
+    expect(request.query).toMatchObject({
+      bool: {
+        filter: expect.arrayContaining([{
+          bool: {
+            should: expect.arrayContaining([{ wildcard: { study_titles: expect.anything() } }]),
+            minimum_should_match: 1,
+          },
+        }]),
+      },
+    });
+  });
+
   it('keeps both study filters when given together', () => {
     const request = buildBrowseSearchRequest('samples', new URLSearchParams({
       study: 'soil',
@@ -229,12 +268,24 @@ describe('bgcs multi-field sort', () => {
     ]);
   });
 
-  it('keeps the per-field bans, so a banned key in a MULTI sort still falls back', () => {
-    // Banned fields must not sneak through via sortFields.
-    for (const banned of ['productType', 'productCategory']) {
-      const params = new URLSearchParams({ sortFields: `length,${banned}`, sortOrders: 'desc,desc' });
-      expect(supportsBrowseSearch('bgcs', params)).toBe(false);
+  it('serves every product sort name, by the rule the SQL fallback also uses', () => {
+    // type/class are what the /bgcs table sends; both backends sort by the smallest/largest
+    // value in byte order.
+    for (const [name, field] of [
+      ['type', 'product_type'], ['product', 'product_type'], ['productType', 'product_type'],
+      ['class', 'product_category'], ['category', 'product_category'], ['productCategory', 'product_category'],
+    ]) {
+      for (const order of ['asc', 'desc'] as const) {
+        const params = new URLSearchParams({ sortField: name, sortOrder: order });
+        expect(supportsBrowseSearch('bgcs', params)).toBe(true);
+        expect(buildBrowseSearchRequest('bgcs', params).sort).toEqual([
+          { [field]: { order } },
+          { bgc_id: { order: 'asc' } },
+        ]);
+      }
     }
+    const multi = new URLSearchParams({ sortFields: 'length,productType', sortOrders: 'desc,asc' });
+    expect(supportsBrowseSearch('bgcs', multi)).toBe(true);
   });
 
   it('sorts taxonomy by the precomputed coalesced key, not by species', () => {
@@ -347,6 +398,16 @@ describe('bgcs ?goldBucket= is served by OpenSearch', () => {
     // Out-of-range longitudes are compared as given, as SQL compares them.
     expect(filtersFor({ lonMin: '-200', lonMax: '200' }))
       .toContainEqual({ range: { longitude: { gte: -200, lte: 200 } } });
+  });
+
+  it('narrows to the assembly source type, as the map counts', () => {
+    expect(supportsBrowseSearch('bgcs', new URLSearchParams({ latMin: '47.3', sourceType: 'metagenome' }))).toBe(true);
+    expect(filtersFor({ latMin: '47.3', sourceType: 'metagenome' }))
+      .toContainEqual({ terms: { assembly_source_type: ['metagenome'] } });
+    const several = new URLSearchParams([['sourceType', 'MAG'], ['sourceType', ' isolate '], ['sourceType', '']]);
+    const req = buildBrowseSearchRequest('bgcs', several) as { query: { bool: { filter: unknown[] } } };
+    expect(req.query.bool.filter).toContainEqual({ terms: { assembly_source_type: ['MAG', 'isolate'] } });
+    expect(JSON.stringify(filtersFor({ latMin: '47.3' }))).not.toContain('assembly_source_type');
   });
 
   it('maps a simple bucket to a path prefix', () => {
@@ -484,10 +545,13 @@ describe('?advancedFilters= is served from the index', () => {
 
   it('serves every multi-valued GCF negative: "no value matches" on both backends', () => {
     for (const [field, value] of [
-      ['taxonomy', 'Streptomyces'], ['biome', 'Marine'], ['productType', 'NRPS'], ['productClass', 'T1PKS'],
+      ['taxonomy', 'Streptomyces'], ['biome', 'Marine'], ['productType', 'NRPS'],
     ]) {
       expect(supportsBrowseSearch('gcfs', params({}, cond(field, 'not_contains', value)))).toBe(true);
     }
+    // The share fields' negatives (lib/filters/share-fields.ts) are set operators.
+    expect(supportsBrowseSearch('gcfs', params({}, cond('productShare', 'not_equals', 'T1PKS')))).toBe(true);
+    expect(supportsBrowseSearch('gcfs', params({}, cond('ecoShareL3', 'not_in', ['Marine'])))).toBe(true);
   });
 
   it('refuses a negative operator, where the two backends genuinely disagree', () => {

@@ -3,10 +3,12 @@ import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { validateFastaSequence, calculateSequenceHash, normalizeToFasta, LENGTH_BOUNDS, MAX_SEQUENCES } from '@/lib/seqsearch/fasta';
-import { cdsFasta, looksLikeGenbank, originFasta, parseGenbank, selectSearchableCds } from '@/lib/seqsearch/genbank';
+import {
+  cdsFasta, countGenbankRecords, looksLikeGenbank, originFasta, parseGenbank, selectSearchableCds,
+} from '@/lib/seqsearch/genbank';
 import { storeSearchSession, checkDuplicateSearch } from '@/lib/seqsearch/database';
-import { SEARCH_DEFAULTS, thresholdOrDefault } from '@/lib/seqsearch/defaults';
-import { addSearchJob, type SequenceSearchJob } from '@/lib/queue';
+import { parseSearchParameters } from '@/lib/seqsearch/defaults';
+import { enqueueRecordedSearch, type SequenceSearchJob } from '@/lib/queue';
 import { getClientIp } from '@/lib/rate-limit';
 import { chargeSearchSubmission, refundSearchSubmission } from '@/lib/search-submission-limit';
 import { serverError } from '@/lib/api/errors';
@@ -17,11 +19,15 @@ interface SequenceSearchRequest {
   /** GenBank only: search CDS translations (default) or the record's nucleotides. */
   queryMode?: 'cds' | 'contig';
   algorithm?: 'diamond';
-  eValue?: string;
-  minIdentity?: number;
-  minCoverage?: number;
-  maxResults?: number;
+  // Typed loosely on purpose: a JSON body can put anything here, and parseSearchParameters
+  // is what turns them into numbers.
+  eValue?: unknown;
+  minIdentity?: unknown;
+  minCoverage?: unknown;
+  maxResults?: unknown;
 }
+
+const SEQUENCE_TYPES: readonly string[] = ['auto', 'dna', 'protein'];
 
 interface SequenceSearchResponse {
   success: boolean;
@@ -38,6 +44,11 @@ interface SequenceSearchResponse {
 
 const SESSION_DIR = process.env.SESSION_DIR || '/tmp/sessions';
 const MAX_SEQUENCES_PER_SUBMISSION = 100;
+/**
+ * Room for a whole annotated genome in GenBank CDS mode (a large Streptomyces .gbk with
+ * translations is ~20-30 MB). FASTA input tops out near 3 MB (100 x 30 kb).
+ */
+const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 
 export async function POST(request: NextRequest): Promise<NextResponse<SequenceSearchResponse>> {
   // Only a queued search keeps its slot; see searchRateLimit.
@@ -51,6 +62,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
     if (limited) return limited;
     chargedIp = clientIp;
 
+    // Checked before the body is read: request.json() and formData() hold all of it
+    // in memory, and this route is outside middleware. A reverse proxy that buffers
+    // the body always sends Content-Length; it is not required, so a local caller
+    // without one still works.
+    const contentLength = Number(request.headers.get('content-length') ?? 0);
+    if (contentLength > MAX_REQUEST_BYTES) {
+      return NextResponse.json({
+        success: false,
+        error: `The submission is too large (${(contentLength / 1024 / 1024).toFixed(1)} MB). The limit is ${MAX_REQUEST_BYTES / 1024 / 1024} MB.`,
+      }, { status: 413 });
+    }
     let requestData: SequenceSearchRequest;
 
     const contentType = request.headers.get('content-type');
@@ -61,10 +83,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
         sequenceType: (formData.get('sequenceType') as 'auto' | 'dna' | 'protein') || 'auto',
         queryMode: (formData.get('queryMode') as 'cds' | 'contig') || undefined,
         algorithm: (formData.get('algorithm') as 'diamond') || 'diamond',
-        eValue: formData.get('eValue') as string | undefined,
-        minIdentity: formData.get('minIdentity') ? Number(formData.get('minIdentity')) : undefined,
-        minCoverage: formData.get('minCoverage') ? Number(formData.get('minCoverage')) : undefined,
-        maxResults: formData.get('maxResults') ? Number(formData.get('maxResults')) : undefined,
+        // Raw strings; parseSearchParameters below decides what is a number.
+        eValue: formData.get('eValue') ?? undefined,
+        minIdentity: formData.get('minIdentity') ?? undefined,
+        minCoverage: formData.get('minCoverage') ?? undefined,
+        maxResults: formData.get('maxResults') ?? undefined,
       };
     } else {
       requestData = await request.json();
@@ -80,7 +103,27 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
       }, { status: 400 });
     }
 
-    if (!sequence || !sequence.trim()) {
+    if (!SEQUENCE_TYPES.includes(sequenceType)) {
+      return NextResponse.json({
+        success: false,
+        error: 'sequenceType must be one of auto, dna or protein',
+      }, { status: 400 });
+    }
+
+    if (requestData.queryMode !== undefined && requestData.queryMode !== 'cds' && requestData.queryMode !== 'contig') {
+      return NextResponse.json({
+        success: false,
+        error: 'queryMode must be cds or contig',
+      }, { status: 400 });
+    }
+
+    // Before anything is written or queued: these values reach DIAMOND's command line.
+    const parsed = parseSearchParameters({ eValue, minIdentity, minCoverage, maxResults });
+    if (!parsed.ok) {
+      return NextResponse.json({ success: false, error: parsed.error }, { status: 400 });
+    }
+
+    if (typeof sequence !== 'string' || !sequence.trim()) {
       return NextResponse.json({
         success: false,
         error: 'Sequence is required',
@@ -94,6 +137,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
     let genbankNote: string | undefined;
 
     if (looksLikeGenbank(sequence)) {
+      // One record only: the parser reads the first, and searching contig 1 of a
+      // 120-contig genome while reporting it as "the file" answers a different question.
+      const records = countGenbankRecords(sequence);
+      if (records > 1) {
+        return NextResponse.json({
+          success: false,
+          error: `This GenBank file has ${records.toLocaleString('en-US')} records; sequence search reads one. `
+            + 'Upload the region or record you want to search (e.g. an antiSMASH regionNNN.gbk), '
+            + 'or paste its sequences as FASTA.',
+        }, { status: 400 });
+      }
       const record = parseGenbank(sequence);
       if (!record) {
         return NextResponse.json({
@@ -174,9 +228,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
     } else {
       actualSequenceType = sequenceType;
 
+      // The chosen alphabet must match the sequence: DNA through blastp, or protein
+      // through blastx, would spend a queue slot on a meaningless answer.
       const detectedType = validation.sequenceType === 'nucleotide' ? 'dna' : 'protein';
       if (actualSequenceType !== detectedType) {
-        console.warn(`Sequence type mismatch: specified ${actualSequenceType}, detected ${detectedType}`);
+        const name = (t: 'dna' | 'protein') => (t === 'dna' ? 'nucleotide' : 'protein');
+        return NextResponse.json({
+          success: false,
+          error: `You chose ${name(actualSequenceType)}, but this looks like a ${name(detectedType)} sequence. `
+            + 'Choose Auto-detect, or the matching sequence type.',
+        }, { status: 400 });
       }
     }
 
@@ -189,7 +250,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
 
     const sequenceHash = calculateSequenceHash(fasta);
 
-    const duplicateSessionId = await checkDuplicateSearch(sequenceHash, 24);
+    // Same sequence AND same parameters: a resubmission at other thresholds is a
+    // different search, and is run.
+    const duplicateSessionId = await checkDuplicateSearch(sequenceHash, {
+      sequenceType: actualSequenceType === 'dna' ? 'nucleotide' : 'protein',
+      eValue: parseFloat(parsed.value.eValue),
+      minIdentity: parsed.value.identity,
+      minCoverage: parsed.value.coverage,
+      maxResults: parsed.value.maxResults,
+    }, 24);
     if (duplicateSessionId) {
       console.log(`Found duplicate search for hash ${sequenceHash}: ${duplicateSessionId}`);
       return NextResponse.json({
@@ -209,36 +278,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
     await writeFile(fastaFile, fasta);
     console.log(`Wrote FASTA file: ${fastaFile}`);
 
-    // These values are stored and handed to DIAMOND as-is; the worker must not re-default them.
+    // These values are stored and handed to DIAMOND as-is (every fallback happens in
+    // parseSearchParameters); the worker must not re-default them.
     const parameters = {
       algorithm: 'diamond' as const,
       sequenceType: actualSequenceType,
-      eValue: eValue || SEARCH_DEFAULTS.eValue,
-      identity: thresholdOrDefault(minIdentity, SEARCH_DEFAULTS.identity),
-      coverage: thresholdOrDefault(minCoverage, SEARCH_DEFAULTS.coverage),
-      maxResults: maxResults !== undefined ? maxResults : SEARCH_DEFAULTS.maxResults,
+      ...parsed.value,
     };
-
-    if (parameters.identity < 0 || parameters.identity > 100) {
-      return NextResponse.json({
-        success: false,
-        error: 'Identity must be between 0 and 100',
-      }, { status: 400 });
-    }
-
-    if (parameters.coverage < 0 || parameters.coverage > 100) {
-      return NextResponse.json({
-        success: false,
-        error: 'Coverage must be between 0 and 100',
-      }, { status: 400 });
-    }
-
-    if (parameters.maxResults < 1 || parameters.maxResults > 1000) {
-      return NextResponse.json({
-        success: false,
-        error: 'Max results must be between 1 and 1,000',
-      }, { status: 400 });
-    }
 
     const jobData: SequenceSearchJob = {
       type: 'sequence',
@@ -248,12 +294,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
       parameters,
     };
 
-    const job = await addSearchJob(jobData);
-    queued = true;
-    const jobId = job.id || '';
-
-    console.log(`Created search job ${jobId} for session ${sessionId}`);
-
+    // The record before the job, which is queued under the session's id: see
+    // enqueueRecordedSearch.
+    const jobId = sessionId;
     const userAgent = request.headers.get('user-agent') || undefined;
     await storeSearchSession({
       sessionId,
@@ -272,6 +315,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<SequenceS
       ipAddress: clientIp !== 'unknown' ? clientIp : undefined,
       userAgent,
     });
+
+    await enqueueRecordedSearch(jobData);
+    queued = true;
+    console.log(`Created search job for session ${sessionId}`);
 
     const totalSequenceLength = validation.sequences.reduce((sum, seq) => sum + seq.length, 0);
     // Rough estimate: 5 s per 1000 residues, tripled for blastx's six-frame translation.

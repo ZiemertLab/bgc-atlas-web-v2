@@ -6,8 +6,11 @@ import { useTaxonomyDistribution } from '@/lib/hooks/use-taxonomy-distribution';
 import { TaxonomyRank, type TaxonomyDistributionData } from '@/lib/types';
 import { getTaxonomyColor } from '@/lib/utils/chart-utils';
 import { Sunburst, type SunburstRow } from './sunburst.client';
+
+/** The grey of the sunburst's "Other" arc (PLACEHOLDER_FILL in sunburst.client). */
+const OTHER_FILL = '#d1d5db';
 import { ChartViewToggle, type ChartView } from './gcf-detail-charts.client';
-import { aggregateByRank, truncateTaxonName } from '@/lib/utils/taxonomy-utils';
+import { aggregateByRank, lineageSunburstRows, rankBarsFromLineages, truncateTaxonName } from '@/lib/utils/taxonomy-utils';
 import {
   Select,
   SelectContent,
@@ -41,6 +44,9 @@ export function TaxonomyDistributionChart({
 
   // Full-lineage rows: walk ranks until the first gap.
   const sunburstRows = useMemo<SunburstRow[]>(() => {
+    // Every lineage when the payload carries them: `distribution` is only the top 20,
+    // which drew any larger family as if those 20 were all of it.
+    if (data?.lineages) return lineageSunburstRows(data.lineages);
     const ranks: (keyof TaxonomyDistributionData)[] = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species'];
     return (data?.distribution ?? []).map((row) => {
       const segments: string[] = [];
@@ -75,6 +81,12 @@ export function TaxonomyDistributionChart({
   }, [defaultWidth, defaultHeight]);
 
   const aggregatedData = useMemo(() => {
+    // From every lineage: the top 15 taxa and one "Other" bar for the rest, so the
+    // bars add up to the family. Grouping the top-20 `distribution` by rank showed
+    // a fraction of any larger family as the whole.
+    if (data?.lineages) {
+      return rankBarsFromLineages(data.lineages, selectedRank, data.summary.totalBgcsWithTaxonomy, 15);
+    }
     if (!data?.distribution) return [];
     return aggregateByRank(data.distribution, selectedRank).slice(0, 15);
   }, [data, selectedRank]);
@@ -162,7 +174,7 @@ export function TaxonomyDistributionChart({
 }
 
 interface TaxonomyBarChartProps {
-  data: { label: string; count: number; percentage: number }[];
+  data: { label: string; count: number; percentage: number; other?: boolean }[];
   width: number;
   height: number;
 }
@@ -212,7 +224,8 @@ function TaxonomyBarChart({ data, width, height }: TaxonomyBarChartProps) {
       .attr('y', (d) => yScale(truncateTaxonName(d.label, 25)) ?? 0)
       .attr('width', (d) => xScale(d.count))
       .attr('height', yScale.bandwidth())
-      .attr('fill', (d) => getTaxonomyColor(d.label))
+      // The Other bar is the sunburst's Other grey, not a taxon's colour.
+      .attr('fill', (d) => ('other' in d && d.other ? OTHER_FILL : getTaxonomyColor(d.label)))
       .attr('rx', 3)
       .style('cursor', 'pointer')
       .on('mouseenter', function (event, d) {

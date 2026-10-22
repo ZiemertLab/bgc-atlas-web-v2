@@ -13,17 +13,13 @@ import {
   extractMultipleValues,
 } from '@/lib/filters/prisma-builders';
 import { parseAdvancedFilterParam, type FilterCondition } from '@/lib/filters/types';
+import { UMBRELLA_STUDY_KEYS } from '@/lib/studies/umbrella-studies';
 
 // Reads the precomputed study_bgc_summary table (scripts/populator/tools/study_bgc_summary/build.py).
 
 
-// Umbrella BioProjects that sweep up unrelated genomes and distort the ranking. Hidden from the
-// index only; the detail route still resolves them.
-export const EXCLUDED_STUDY_KEYS = [
-  'PRJNA224116', // RefSeq Prokaryotic Genome Annotation Project
-  'PRJNA230969', // GenomeTrakr Project, US Food and Drug Administration
-  'PRJNA231221', // FDA-ARGOS reference genome database
-];
+// The umbrella BioProjects hidden from the index; why, in lib/studies/umbrella-studies.
+export const EXCLUDED_STUDY_KEYS = UMBRELLA_STUDY_KEYS;
 
 // Raw {ecosystem: sample_count} maps from study_ecosystem_dist.
 type EcosystemCounts = Record<string, number> | null;
@@ -61,6 +57,9 @@ function toPercentagesByLevel(
 }
 
 export function parseIntParam(value: string | null, fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  // Absent or blank is the fallback. Number(null) is 0, which clamped a missing
+  // ?limit= to 1 study where the API documents 50.
+  if (value === null || value.trim() === '') return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(Math.trunc(n), min), max);
@@ -148,17 +147,42 @@ export function buildStudyOrder(params: URLSearchParams) {
   return Prisma.sql`ORDER BY ${column} ${direction} NULLS LAST, study_key ASC`;
 }
 
+// Index-only exclusions of rows that would render as zeros; the detail route still resolves them.
+const LISTING_FILTERS: Prisma.Sql[] = [
+  Prisma.sql`sample_count > 0`,
+  Prisma.sql`total_bgcs > 0`,
+];
+
 /** The listing's WHERE. Throws a refusal for an advanced filter it cannot honour. */
 export function buildStudyWhere(params: URLSearchParams): Prisma.Sql {
   // ?key= resolves one study by exact study_key (a lookup, so the index exclusions don't apply).
   const key = (params.get('key') ?? '').trim();
 
-  const filters: Prisma.Sql[] = key ? [Prisma.sql`study_key = ${key}`] : [
-    Prisma.sql`study_key <> ALL(${EXCLUDED_STUDY_KEYS})`,
-    // Index-only exclusions of rows that would render as zeros; the detail route still resolves them.
-    Prisma.sql`sample_count > 0`,
-    Prisma.sql`total_bgcs > 0`,
-  ];
+  const filters: Prisma.Sql[] = key
+    ? [Prisma.sql`study_key = ${key}`]
+    : [Prisma.sql`study_key <> ALL(${EXCLUDED_STUDY_KEYS})`, ...LISTING_FILTERS];
+  filters.push(...buildUserFilters(params));
+  return Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`;
+}
+
+/**
+ * How many umbrella studies the unfiltered index leaves out while still passing
+ * its other conditions — what the headline adds back so it matches a count of
+ * the downloaded database. null under any search or filter: there the count is
+ * the rows listed, and an umbrella study matching the filter is not one of them.
+ */
+export async function countUnlistedStudies(params: URLSearchParams): Promise<number | null> {
+  if ((params.get('key') ?? '').trim() || buildUserFilters(params).length) return null;
+  const rows = await prisma.$queryRaw<{ total: number }[]>(Prisma.sql`
+    SELECT COUNT(*)::int AS total FROM study_bgc_summary
+    WHERE ${Prisma.join([Prisma.sql`study_key = ANY(${EXCLUDED_STUDY_KEYS})`, ...LISTING_FILTERS], ' AND ')}
+  `);
+  return rows?.[0]?.total ?? 0;
+}
+
+/** The reader's own conditions: search, the quick filters, the advanced drawer. */
+function buildUserFilters(params: URLSearchParams): Prisma.Sql[] {
+  const filters: Prisma.Sql[] = [];
 
   const search = (params.get('search') ?? '').trim();
   if (search) {
@@ -188,9 +212,7 @@ export function buildStudyWhere(params: URLSearchParams): Prisma.Sql {
     studyFilterFields,
   );
   if (advancedWhere) filters.push(advancedWhere);
-  return filters.length
-    ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
-    : Prisma.empty;
+  return filters;
 }
 
   // BIGINT counters -> ::int so NextResponse.json doesn't choke on BigInt (all fit int).

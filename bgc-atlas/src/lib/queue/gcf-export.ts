@@ -5,10 +5,26 @@ import prisma from '@/lib/prisma';
 import { sendExportFailedEmail, sendExportReadyEmail } from '@/lib/mail/export-notification';
 import { exportRegionsByGcf, exportRegionsByIds } from '@/lib/export/region-sources';
 import { createRegionZip } from '@/lib/export/region-zip';
-import { EXPORT_DIR, RETENTION_DAYS } from '@/lib/export/export-dir';
+import { EXPORT_DIR, gcfExportPath, RETENTION_DAYS } from '@/lib/export/export-dir';
 import { scrollHits } from '@/lib/opensearch/client';
 import { PROPERTY_GBK_EXPORT_MAX_REGIONS } from '@/lib/gcf/export-limits';
-import type { GcfGbkExportJob, PropertyGbkExportJob } from './index';
+import { getHitBgcIds } from '@/lib/seqsearch/database';
+import type { GcfGbkExportJob, PropertyGbkExportJob, SequenceGbkExportJob } from './index';
+
+
+/**
+ * Who to mail about an export: the record's address, read when the job ends. A reader
+ * who asks for a GCF export already running is attached to it there
+ * (api/gcfs/[id]/export-gbk); the queued job's own copy predates them.
+ */
+async function recipientOf(exportJobId: string, queued: string | undefined): Promise<string | undefined> {
+  try {
+    const row = await prisma.gcfExportJob.findUnique({ where: { id: exportJobId }, select: { user_email: true } });
+    return row?.user_email || queued;
+  } catch {
+    return queued;
+  }
+}
 
 interface ProcessGcfGbkExportResult {
   exportJobId: string;
@@ -48,10 +64,12 @@ export async function processGcfGbkExport(
 
     await mkdir(EXPORT_DIR, { recursive: true });
 
+    // The readable name is what the download is called; on disk the file is named by job,
+    // so two exports of one family on one day cannot overwrite each other's zip.
     const timestamp = new Date().toISOString().split('T')[0];
     const sanitizedName = gcfName.replace(/[^a-zA-Z0-9_-]/g, '_');
     const outputFilename = `gcf-${sanitizedName}-${timestamp}.zip`;
-    const outputPath = join(EXPORT_DIR, outputFilename);
+    const outputPath = gcfExportPath(exportJobId);
 
     console.log(`Creating ZIP archive: ${outputPath}`);
 
@@ -85,7 +103,9 @@ export async function processGcfGbkExport(
 
     await job.updateProgress(100);
 
-    await sendCompletionNotifications(exportJobId, gcfName, bgcs.length, missingFiles, userEmail);
+    await sendCompletionNotifications(
+      exportJobId, gcfName, bgcs.length, missingFiles, await recipientOf(exportJobId, userEmail),
+    );
 
     console.log(`GCF GBK export completed: ${exportJobId}`);
 
@@ -108,7 +128,7 @@ export async function processGcfGbkExport(
       duration_ms: Date.now() - startTime,
     });
 
-    await sendFailureNotification(exportJobId, gcfName, userEmail);
+    await sendFailureNotification(exportJobId, gcfName, await recipientOf(exportJobId, userEmail));
 
     throw error;
   }
@@ -180,10 +200,11 @@ async function sendFailureNotification(
   );
 }
 
-// Property-search GBK export: shares the gcf_export_jobs record (kind 'regions'), job page and
-// expiry sweep with the GCF export; the record is created by POST /api/search/properties/export-gbk.
+// Region GBK exports of a search's matches (property or sequence search): share the
+// gcf_export_jobs record (kind 'regions'), job page and expiry sweep with the GCF export. The
+// export-gbk route creates the record; the job resolves its BGC ids so the job page opens at once.
 
-export interface ProcessPropertyGbkExportResult {
+export interface ProcessRegionsGbkExportResult {
   exportJobId: string;
   status: string;
   totalBgcs: number;
@@ -192,19 +213,24 @@ export interface ProcessPropertyGbkExportResult {
   durationMs: number;
 }
 
-export async function processPropertyGbkExport(
-  job: Job<PropertyGbkExportJob>,
-  jobData: PropertyGbkExportJob,
-): Promise<ProcessPropertyGbkExportResult> {
-  const { exportJobId, userEmail } = jobData;
+interface RegionsExportSpec {
+  /** "your search results", in the reader's ready/failed email. */
+  what: string;
+  /** The BGCs to package, at most PROPERTY_GBK_EXPORT_MAX_REGIONS. */
+  resolveBgcIds: () => Promise<string[]>;
+}
+
+async function runRegionsGbkExport(
+  job: Job<PropertyGbkExportJob | SequenceGbkExportJob>,
+  exportJobId: string,
+  userEmail: string | undefined,
+  spec: RegionsExportSpec,
+): Promise<ProcessRegionsGbkExportResult> {
   const startTime = Date.now();
   try {
     await updateExportJobStatus(exportJobId, { status: 'running', started_at: new Date() });
     await mkdir(EXPORT_DIR, { recursive: true });
-    // The start request only counted the matches so the job page opens at once; ~10 s at the cap.
-    const bgcIds = jobData.bgcIds ?? (
-      await scrollHits(jobData.group ?? null, jobData.sort ?? null, PROPERTY_GBK_EXPORT_MAX_REGIONS, ['bgc_id'])
-    ).map((h) => String(h.bgc_id ?? '')).filter(Boolean);
+    const bgcIds = await spec.resolveBgcIds();
     const regions = await exportRegionsByIds(bgcIds);
     if (regions.length === 0) throw new Error('None of the matching BGCs could be found');
     await updateExportJobStatus(exportJobId, { total_bgcs: regions.length });
@@ -240,7 +266,7 @@ export async function processPropertyGbkExport(
     if (userEmail) {
       await mailReader(
         () => sendExportReadyEmail(
-          { to: userEmail, exportJobId, what: 'your search results' }, regions.length, missingFiles,
+          { to: userEmail, exportJobId, what: spec.what }, regions.length, missingFiles,
         ),
         exportJobId,
       );
@@ -264,10 +290,36 @@ export async function processPropertyGbkExport(
     });
     if (userEmail) {
       await mailReader(
-        () => sendExportFailedEmail({ to: userEmail, exportJobId, what: 'your search results' }),
+        () => sendExportFailedEmail({ to: userEmail, exportJobId, what: spec.what }),
         exportJobId,
       );
     }
     throw error;
   }
+}
+
+export function processPropertyGbkExport(
+  job: Job<PropertyGbkExportJob>,
+  jobData: PropertyGbkExportJob,
+): Promise<ProcessRegionsGbkExportResult> {
+  return runRegionsGbkExport(job, jobData.exportJobId, jobData.userEmail, {
+    what: 'your search results',
+    // ~10 s at the cap.
+    resolveBgcIds: async () => jobData.bgcIds ?? (
+      await scrollHits(jobData.group ?? null, jobData.sort ?? null, PROPERTY_GBK_EXPORT_MAX_REGIONS, ['bgc_id'])
+    ).map((h) => String(h.bgc_id ?? '')).filter(Boolean),
+  });
+}
+
+export function processSequenceGbkExport(
+  job: Job<SequenceGbkExportJob>,
+  jobData: SequenceGbkExportJob,
+): Promise<ProcessRegionsGbkExportResult> {
+  return runRegionsGbkExport(job, jobData.exportJobId, jobData.userEmail, {
+    what: 'your sequence search results',
+    // Session-local rows; a session holds at most ~100 queries x 1,000 hits, so the cap
+    // is a guard rather than a limit anyone meets.
+    resolveBgcIds: async () =>
+      (await getHitBgcIds(jobData.sessionId, jobData.filters ?? {})).slice(0, PROPERTY_GBK_EXPORT_MAX_REGIONS),
+  });
 }

@@ -1,6 +1,6 @@
 # BGC Atlas
 
-The BGC Atlas website and rebuild its data: the
+The minimum needed to run the live BGC Atlas site and rebuild its data: the
 Next.js app, the database schema, the scripts that populate PostgreSQL and
 OpenSearch, and the jobs that keep them current.
 
@@ -8,6 +8,7 @@ OpenSearch, and the jobs that keep them current.
 bgc-atlas/        Next.js app (pm2: bgc-atlas-v2, 127.0.0.1:3001)
 new-schema/       schema baseline, seed data, post-load corrections — see its README
 scripts/          population, clustering, OpenSearch, downloads
+docker/bigslice/  BiG-SLiCE image build context
 docs/             runbooks (post-load refresh, data releases), release notes, static snapshots
 ```
 
@@ -21,11 +22,14 @@ The app spawns `../scripts/trim_antismash_region.py`, so `bgc-atlas/` and
 
 | | where | notes |
 |---|---|---|
-| PostgreSQL 18 | 
-| Redis | 
-| OpenSearch 2.19 | 
+| PostgreSQL 18 | localhost | database `bgc_atlas_v2`; roles `bgc_owner` (owner) and `bgc_app` (app) |
+| Redis | localhost:6379 db 0 | rate limits, BullMQ queues, stat caches |
+| OpenSearch 2.19 | container `bgc-opensearch` on the docker host, security on (`scripts/opensearch/`) | five aliases: `bgc_browse`, `gcf_browse`, `sample_browse`, `bgc_facets`, `bgc_facet_vocab` |
 | Shared storage | the data root, `/data/bgc-atlas` below, mounted at the same path on the app host **and** the docker host | antiSMASH run tarballs (`antismash_runs.file_path`), `all_regions_gbk.tar.gz`, downloads, BiG-SLiCE workspaces, DIAMOND db |
+| ssh to the docker host | key for the app user; `SEQSEARCH_SSH_HOST` / `BIGSLICE_SSH_HOST` name it | sequence and BiG-SLiCE search run there in Docker |
 | Python | `/data/bgc-atlas/miniforge3/bin/python3` | `ANTISMASH_PYTHON` default; needs `ijson` |
+| Reverse proxy, mail relay | not in this repo | the proxy forwards `/` to 127.0.0.1:3001 and serves `/downloads/` from the data root |
+| `.env`, `.env.local` | `bgc-atlas/` | template: `bgc-atlas/.env.local.example`. Cron scripts read `.env`; the app reads `.env.local` |
 
 **Data root.** Scripts and code defaults write the shared storage as
 `/data/bgc-atlas`. Mount or symlink it there, or set the per-path variables in
@@ -49,6 +53,9 @@ npx prisma generate
 npm run build
 pm2 start ecosystem.config.js        # or: pm2 restart bgc-atlas-v2
 ```
+
+The build prerenders pages from the database (corpus totals, the share cards,
+the sitemap), so `.env` must point at a populated database.
 
 `.next` **is** the live build: `npm run build` in the served checkout replaces
 it under the running server, and `npm run dev` there takes the site down. A
@@ -173,12 +180,14 @@ something the site shows. Run all of them after a fresh load:
   `study_gcf`, `gcf_study_count`
 - `scripts/clustering-v3/backfill_taxonomy_dist.sql` ->
   `gcf_taxonomy_distribution_mv` (a table)
+- `scripts/clustering-v3/build_gcf_taxonomy_counts.sql` -> `gcf_taxonomy_counts`
+  (the family taxonomy panel)
 - `scripts/clustering-v3/build_cooccurrence_stats.sql` and
   `tools/recompute_cooccurrence.py`
 - `bgc-atlas/scripts/backfill-gcf-pet-names.ts`, if the clustering output
   carries no pet names
 
-**9. Materialized views.** All 34 come out of the baseline unpopulated, and
+**9. Materialized views.** All 39 come out of the baseline unpopulated, and
 `REFRESH ... CONCURRENTLY` (what the weekly refresh script uses)
 refuses an unpopulated view. Do the first refresh plainly, in tier order:
 

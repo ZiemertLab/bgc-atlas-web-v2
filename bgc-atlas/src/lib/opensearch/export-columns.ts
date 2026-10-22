@@ -1,6 +1,8 @@
 // Columns and serializers for BGC property-search exports, shared by the current-page
 // download and the export-all endpoint so both produce identical files.
 
+import { escapeDelimitedField } from '@/lib/utils/export';
+
 export interface ExportColumn { key: string; label: string; }
 
 export const EXPORT_COLUMNS: ExportColumn[] = [
@@ -31,12 +33,9 @@ export function cellValue(hit: Hit, key: string): string {
   return String(v);
 }
 
-const escapeDelimited = (value: string, delimiter: string): string => {
-  if (value.includes(delimiter) || value.includes('"') || value.includes('\n')) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-};
+// The one escaper every export uses (quoting, \r, TSV structure, spreadsheet formulas);
+// this file had its own, which left \r unquoted and wrote TSV differently.
+const escapeDelimited = (value: string, delimiter: string): string => escapeDelimitedField(value, delimiter);
 
 // The generic pair; `toDelimited`/`toJsonRows` below are the BGC-column bindings.
 
@@ -47,7 +46,9 @@ export function serializeDelimited(
   const body = rows.map((r) =>
     columns.map((c) => escapeDelimited(cellValue(r, c.key), delimiter)).join(delimiter),
   );
-  return [header, ...body].join('\n');
+  // Trailing newline, as the other exports end: without one the last line is
+  // incomplete to most POSIX tools.
+  return `${[header, ...body].join('\n')}\n`;
 }
 
 export function serializeJsonRows(

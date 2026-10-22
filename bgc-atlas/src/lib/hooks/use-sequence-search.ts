@@ -76,6 +76,8 @@ export interface UseSequenceSearchOptions {
   /** Restrict to hits overlapping this span of the query contig. */
   queryFrom?: number;
   queryTo?: number;
+  /** The contig that span is on; a multi-FASTA search's contigs share coordinates. */
+  queryId?: string;
   limit?: number;
   offset?: number;
   sortBy?: 'evalue' | 'identity' | 'bitscore' | 'querygenes';
@@ -112,6 +114,7 @@ export function useSequenceSearch(
     minCoverage,
     queryFrom,
     queryTo,
+    queryId,
     limit = 25,
     sortBy = 'evalue',
     sortOrder = 'asc',
@@ -130,6 +133,7 @@ export function useSequenceSearch(
   if (minCoverage !== undefined) params.append('minCoverage', String(minCoverage));
   if (queryFrom !== undefined) params.append('queryFrom', String(queryFrom));
   if (queryTo !== undefined) params.append('queryTo', String(queryTo));
+  if (queryId !== undefined) params.append('queryId', queryId);
 
   const url = sessionId ? `/api/search/sequence/${sessionId}?${params.toString()}` : null;
 
@@ -165,7 +169,7 @@ export function useSequenceGroupHits(
   // Keyed by BGC only: a group is one BGC, whichever query sequence produced the alignments.
   group: { groupKey: string } | null,
   enabled: boolean,
-  filters: { minIdentity?: number; minCoverage?: number } = {},
+  filters: { minIdentity?: number; minCoverage?: number; queryFrom?: number; queryTo?: number; queryId?: string } = {},
 ) {
   const params = new URLSearchParams();
   if (group) {
@@ -173,6 +177,10 @@ export function useSequenceGroupHits(
   }
   if (filters.minIdentity !== undefined) params.set('minIdentity', String(filters.minIdentity));
   if (filters.minCoverage !== undefined) params.set('minCoverage', String(filters.minCoverage));
+  // The selected locus too, so an expanded row lists only the alignments the table counted.
+  if (filters.queryFrom !== undefined) params.set('queryFrom', String(filters.queryFrom));
+  if (filters.queryTo !== undefined) params.set('queryTo', String(filters.queryTo));
+  if (filters.queryId !== undefined) params.set('queryId', filters.queryId);
 
   const { data, error, isLoading } = useQuery({
     queryKey: ['search', 'sequence-group', sessionId, group?.groupKey, filters],

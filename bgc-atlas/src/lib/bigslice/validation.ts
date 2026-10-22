@@ -107,7 +107,9 @@ export interface FileCollectionValidationResult {
   fileCount?: number;
 }
 
-// Strips NULs (rejected by PostgreSQL) and control characters from external tools' errors before storage.
+// Strips NULs (rejected by PostgreSQL) and control characters from external tools' errors before
+// storage, and keeps the start and the end within the length limit: a failed tool prints pages of
+// progress before the traceback that says why.
 export function sanitizeErrorMessage(
   errorMessage: string,
   maxLength: number = 5000
@@ -116,8 +118,14 @@ export function sanitizeErrorMessage(
 
   let sanitized = errorMessage;
 
+  // The first line names the step that failed; the last ones say why.
   if (sanitized.length > maxLength) {
-    sanitized = sanitized.slice(0, maxLength) + '... (truncated)';
+    const head = Math.min(1000, Math.floor(maxLength / 4));
+    const tail = maxLength - head;
+    const omitted = sanitized.length - head - tail;
+    sanitized =
+      `${sanitized.slice(0, head)}\n... (${omitted.toLocaleString('en-US')} characters omitted) ...\n` +
+      sanitized.slice(-tail);
   }
 
   sanitized = sanitized.replace(/\0/g, '');

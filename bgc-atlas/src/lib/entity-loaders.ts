@@ -2,6 +2,7 @@ import { cache } from 'react';
 import { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { PREVIOUS_CLUSTERING_ORDER, canonicalGcfName } from '@/lib/clustering';
+import { studyTitle } from '@/lib/utils/accession';
 
 // Shared by generateMetadata, JSON-LD and the social card (deduped by React's cache()). "missing"
 // and "error" stay distinct: only a missing entity is noindexed, never a database blip.
@@ -122,6 +123,10 @@ export const gcfDescription = (row: GcfRow, id: string) =>
   `${gcfName(row, id)}${row.pet_name ? ` (alias ${row.pet_name})` : ''}: gene cluster ` +
   `family with ${plural(row.member_bgc_count, 'member BGC', 'member BGCs')} across the BGC Atlas dataset.`;
 
+/** For a link preview: the title already names the family, and the site name sits beside it. */
+export const gcfShareDescription = (row: GcfRow) =>
+  `Gene cluster family with ${plural(row.member_bgc_count, 'member BGC', 'member BGCs')}.`;
+
 export const gcfStructuredDescription = (row: GcfRow, id: string) =>
   [
     row.description ??
@@ -171,10 +176,20 @@ export const bgcDescription = (row: BgcRow) =>
   `${bgcLabel(row)} biosynthetic gene cluster${row.contig ? ` on contig ${row.contig}` : ''}, ` +
   `${bgcKb(row).toLocaleString()} kb, in the BGC Atlas.`;
 
+/** For a link preview. No contig: assembler names run to 60+ characters. */
+export const bgcShareDescription = (row: BgcRow) => {
+  const types = bgcProducts(row).slice(0, 2).join(', ');
+  return `${types ? `${types} biosynthetic` : 'Biosynthetic'} gene cluster, ${bgcKb(row).toLocaleString()} kb.`;
+};
+
 export interface StudyRow {
   title: string | null;
   study_name: string | null;
   study_key: string;
+  /** The canonical id: every physical studies.id of the study resolves to this one. */
+  study_id: string;
+  accession: string | null;
+  bioproject: string | null;
   sample_count: number;
   total_bgcs: number;
   abstract: string | null;
@@ -188,8 +203,8 @@ export const loadStudy = cache(async (id: string): Promise<LoadResult<StudyRow>>
     // Resolves the physical studies.id to its logical summary row; the abstract columns let callers
     // apply the UI's licence gate.
     const rows = await prisma.$queryRaw<StudyRow[]>(Prisma.sql`
-      SELECT sbs.title, sbs.study_name, sbs.study_key,
-             sbs.sample_count, sbs.total_bgcs::int AS total_bgcs,
+      SELECT sbs.title, sbs.study_name, sbs.study_key, sbs.study_id::text AS study_id,
+             sbs.accession, sbs.bioproject, sbs.sample_count, sbs.total_bgcs::int AS total_bgcs,
              st.abstract, st.abstract_source, st.abstract_license
       FROM studies st
       JOIN study_bgc_summary sbs
@@ -206,8 +221,13 @@ export const loadStudy = cache(async (id: string): Promise<LoadResult<StudyRow>>
   }
 });
 
-export const studyName = (row: StudyRow) => row.title || row.study_name || row.study_key;
+export const studyName = (row: StudyRow) => studyTitle(row);
 
 export const studySummary = (row: StudyRow) =>
   `${studyName(row)}: ${plural(row.sample_count, 'sample', 'samples')} and ` +
   `${plural(row.total_bgcs, 'biosynthetic gene cluster', 'biosynthetic gene clusters')} in the BGC Atlas.`;
+
+/** For a link preview, where the title is already the study's name. */
+export const studyShareDescription = (row: StudyRow) =>
+  `${plural(row.sample_count, 'sample', 'samples')} and ` +
+  `${plural(row.total_bgcs, 'biosynthetic gene cluster', 'biosynthetic gene clusters')}.`;

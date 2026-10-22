@@ -19,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import { ColumnSettingsPopover } from './column-settings-popover';
 import { FilterRow } from './filter-row';
+import { reconcileColumns } from './reconcile-columns';
 import { SortableTableHead } from './sortable-table-head';
 import type { ResizableTableProps, TableColumn } from './types';
 
@@ -43,6 +44,17 @@ export function ResizableTable<T>({
   stickyFirstColumn = false,
 }: ResizableTableProps<T>) {
   const [columns, setColumns] = useState(initialColumns);
+
+  // A page may add or drop columns after mount (/gcfs adds one per active share
+  // filter). Internal state keeps the reader's order, widths and visibility for
+  // the columns that stay; see reconcileColumns. Adjusted during render, keyed
+  // on the id set, so an unchanged set costs one string compare.
+  const propIdKey = initialColumns.map((c) => c.id).join('\u0000');
+  const [syncedIdKey, setSyncedIdKey] = useState(propIdKey);
+  if (propIdKey !== syncedIdKey) {
+    setSyncedIdKey(propIdKey);
+    setColumns((prev) => reconcileColumns(prev, initialColumns));
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getOrSetCache } from '@/lib/cache';
 import { serverError } from '@/lib/api/errors';
+import type { TaxonomyLineage } from '@/lib/types';
 
 const isValidUuid = (id: string) => {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -27,7 +28,8 @@ export async function GET(
     }
 
     // v2: numeric coercion fixed (v1 leaked Decimal/string through the cache)
-    const cacheKey = `gcf:taxonomy-distribution:v2:${id}`;
+    // v4: `lineages` added, every lineage of the family (v2 and v3 entries lack it).
+    const cacheKey = `gcf:taxonomy-distribution:v4:${id}`;
 
     const payload = await getOrSetCache(
       cacheKey,
@@ -48,22 +50,37 @@ export async function GET(
         };
 
         // Members collapse to far fewer distinct taxonomy_ids (535k -> ~17k), so
-        // scan them once into an ON COMMIT DROP temp table that both queries read.
-        // work_mem is pinned so the GROUP BY stays off CephFS temp; SET LOCAL and
-        // the temp table both revert at commit. id is UUID-validated above.
-        const { taxonomyData, summaryResult } = await prisma.$transaction(async (tx) => {
+        // their counts go into an ON COMMIT DROP temp table that both queries read.
+        // The counts are precomputed in gcf_taxonomy_counts and copied in by an
+        // indexed lookup (a live scan of the members took minutes on cold storage).
+        // The live scan stays as the fallback for a family the table has no rows
+        // for (one re-clustered since the table was last built), so a missed
+        // rebuild is slow rather than an empty panel. work_mem is pinned so the
+        // GROUP BY stays off disk temp; SET LOCAL and the temp table both revert
+        // at commit. id is UUID-validated above.
+        const { taxonomyData, lineageData, summaryResult } = await prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL work_mem = '256MB'`);
         await tx.$executeRawUnsafe(
-          // LEFT: bgc_taxonomy has no row for an unclassified BGC, and that NULL
-          // bucket feeds bgcs_without_taxonomy.
           `CREATE TEMP TABLE gcf_tax_counts ON COMMIT DROP AS
-             SELECT bt.taxonomy_id, COUNT(*)::int AS bgc_count
-             FROM bgc_gcf bg
-             LEFT JOIN bgc_taxonomy bt ON bt.bgc_id = bg.bgc_id
-             -- primary membership only, so the distribution sums to the member count
-             WHERE bg.gcf_id = '${id}'::uuid AND bg.is_primary
-             GROUP BY bt.taxonomy_id`
+             SELECT taxonomy_id, bgc_count FROM gcf_taxonomy_counts
+             WHERE gcf_id = '${id}'::uuid`
         );
+        const [{ precomputed }] = await tx.$queryRaw<{ precomputed: boolean }[]>`
+          SELECT EXISTS (SELECT 1 FROM gcf_tax_counts) AS precomputed
+        `;
+        if (!precomputed) {
+          await tx.$executeRawUnsafe(
+            // LEFT: bgc_taxonomy has no row for an unclassified BGC, and that NULL
+            // bucket feeds bgcs_without_taxonomy.
+            `INSERT INTO gcf_tax_counts
+               SELECT bt.taxonomy_id, COUNT(*)::int AS bgc_count
+               FROM bgc_gcf bg
+               LEFT JOIN bgc_taxonomy bt ON bt.bgc_id = bg.bgc_id
+               -- primary membership only, so the distribution sums to the member count
+               WHERE bg.gcf_id = '${id}'::uuid AND bg.is_primary
+               GROUP BY bt.taxonomy_id`
+          );
+        }
 
         const taxonomyData = await tx.$queryRaw<TaxonomyRow[]>`
           WITH taxonomy_by_rank AS (
@@ -94,6 +111,22 @@ export async function GET(
           FROM taxonomy_by_rank
         `;
 
+        // Every lineage, compact, for the sunburst and the bar chart; drawn from the
+        // top 20 above, they showed a fraction of a large family as the whole. As
+        // tuples the largest family is a few MB of JSON; 99% of families have 17
+        // lineages or fewer.
+        type LineageRow = {
+          domain: string | null; phylum: string | null; class: string | null; order_name: string | null;
+          family: string | null; genus: string | null; species: string | null; bgc_count: number;
+        };
+        const lineageData = await tx.$queryRaw<LineageRow[]>`
+          SELECT t.domain, t.phylum, t.class, t.order_name, t.family, t.genus, t.species,
+                 SUM(tc.bgc_count)::int AS bgc_count
+          FROM gcf_tax_counts tc
+          JOIN taxonomies t ON t.id = tc.taxonomy_id
+          GROUP BY t.domain, t.phylum, t.class, t.order_name, t.family, t.genus, t.species
+          ORDER BY bgc_count DESC
+        `;
         type SummaryRow = {
           total_bgcs: string | number;
           bgcs_with_taxonomy: string | number;
@@ -123,7 +156,7 @@ export async function GET(
           LEFT JOIN taxonomies t ON t.id = tc.taxonomy_id
         `;
 
-          return { taxonomyData, summaryResult };
+          return { taxonomyData, lineageData, summaryResult };
         }, { timeout: 120000, maxWait: 20000 });
 
         // Prisma may return numerics as string, number or Decimal.
@@ -189,8 +222,14 @@ export async function GET(
               : summaryResult.unique_species,
         };
 
+        const lineages = lineageData.map((row) => [
+          row.domain, row.phylum, row.class, row.order_name, row.family, row.genus, row.species,
+          Number(row.bgc_count),
+        ] as TaxonomyLineage);
+
         return {
           distribution,
+          lineages,
           summary,
         };
       },

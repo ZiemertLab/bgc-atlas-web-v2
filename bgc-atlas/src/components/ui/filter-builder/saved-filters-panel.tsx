@@ -14,6 +14,7 @@ import {
 import { Input } from '@/components/ui/input';
 import type { FilterFieldDefinition, FilterGroup } from '@/lib/filters/types';
 import type { FilterRecipe } from '@/lib/filters/recipes';
+import { migrateLegacyFilterGroup } from '@/lib/filters/legacy-conditions';
 import { cloneGroup, type SavedFilter } from './helpers';
 
 interface SavedFiltersPanelProps {
@@ -85,10 +86,13 @@ export function SavedFiltersPanel({
     if (!serializedFilters) return;
     const shareTarget = (() => {
       if (typeof window === 'undefined') {
-        return `advancedFilters=${serializedFilters}`;
+        return `advancedFilters=${encodeURIComponent(serializedFilters)}`;
       }
       const url = new URL(window.location.href);
       url.searchParams.set('advancedFilters', serializedFilters);
+      // The shared filter is a different result set, so the page the sharer
+      // happens to be on means nothing in it; the recipient starts at page 1.
+      url.searchParams.delete('page');
       return url.toString();
     })();
 
@@ -112,7 +116,8 @@ export function SavedFiltersPanel({
   };
 
   const applySavedFilter = (saved: SavedFilter) => {
-    onChange(cloneGroup(saved.group));
+    // Saved before a field was retired? Read it the way a link is read.
+    onChange(migrateLegacyFilterGroup(cloneGroup(saved.group)));
   };
 
   const applyRecipe = (recipe: FilterRecipe) => {

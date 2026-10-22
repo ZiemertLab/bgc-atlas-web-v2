@@ -8,12 +8,18 @@ import { ProductCategoryChart } from '@/components/ui/product-category-chart';
 import { ArrowRight } from 'lucide-react';
 import type { GcfListItem } from '@/lib/hooks/use-gcfs';
 import { formatBgcLength } from '@/lib/utils/bgc-length';
+import { ShareMatchCell } from '@/components/gcf/share-match-cell';
+import { shareConditionLabel } from '@/lib/gcf/share-display';
+import type { ShareQuery } from '@/lib/filters/share-fields';
 
 interface GcfCardProps {
   gcf: GcfListItem;
+  /** The applied share filters: the card says why the family matched each,
+   *  as the table's columns do. */
+  shareQueries?: ShareQuery[];
 }
 
-export function GcfCard({ gcf }: GcfCardProps) {
+export function GcfCard({ gcf, shareQueries = [] }: GcfCardProps) {
   const length = formatBgcLength(gcf.lengthStats);
 
   return (
@@ -76,6 +82,17 @@ export function GcfCard({ gcf }: GcfCardProps) {
             </dd>
           </div>
         </dl>
+
+        {shareQueries.length > 0 && (
+          <dl className="mb-4 space-y-2 text-sm">
+            {shareQueries.map((query, i) => (
+              <div key={i}>
+                <dt className="text-xs text-muted-foreground">{shareConditionLabel(query)}</dt>
+                <dd><ShareMatchCell gcf={gcf} query={query} inline /></dd>
+              </div>
+            ))}
+          </dl>
+        )}
 
         {/* Members by exact category combination, as in the table's distribution column. */}
         {Object.keys(gcf.productCategoryDistribution ?? {}).length > 0 && (

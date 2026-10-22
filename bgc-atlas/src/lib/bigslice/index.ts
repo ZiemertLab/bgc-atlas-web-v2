@@ -4,6 +4,10 @@ import type { BiGSliceTier } from './families';
 import { access, mkdir } from 'fs/promises';
 import { createWriteStream } from 'fs';
 
+import { remoteCommand, replacingDockerRun } from '../seqsearch/shell-quote';
+import { remoteImageState } from '../seqsearch/exec';
+import { appendTail } from '@/lib/utils/output-tail';
+
 // Shared SSH options for remote (ssh-docker) execution: never prompt, fail fast on connect, and
 // keepalive so long silent remote runs don't get the connection idled out (surfaces as exit 255).
 const SSH_OPTS = [
@@ -38,6 +42,8 @@ export interface BiGSliceOptions {
   outputDirectory?: string;
   threads?: number;
   logFile?: string;
+  /** ssh-docker: names the container and replaces one left under this name. */
+  containerName?: string;
 }
 
 export interface BiGSliceResult {
@@ -56,6 +62,7 @@ export async function runBiGSlice(options: BiGSliceOptions): Promise<BiGSliceRes
     outputDirectory = tierWorkspace(tier),
     threads = Number(process.env.BIGSLICE_THREADS) || 16,
     logFile,
+    containerName,
   } = options;
 
   const sanitizedQueryName = queryName.replace(/-/g, '_');
@@ -95,11 +102,7 @@ export async function runBiGSlice(options: BiGSliceOptions): Promise<BiGSliceRes
         ? `${process.getuid()}:${process.getgid()}`
         : '');
 
-    command = 'ssh';
-    args = [
-      ...SSH_OPTS,
-      sshHost,
-      'docker', 'run', '--rm',
+    const runArgs = [
       ...(dockerUser ? ['--user', dockerUser] : []),
       '-v', `${cephMount}:${cephMount}`,
       image,
@@ -108,6 +111,15 @@ export async function runBiGSlice(options: BiGSliceOptions): Promise<BiGSliceRes
       // Models are baked into the image; the container's default model path is empty.
       '--program_db_folder', programDbFolder,
       outputDirectory,
+    ];
+    command = 'ssh';
+    // One quoted string: ssh hands everything after the host to a remote shell.
+    args = [
+      ...SSH_OPTS,
+      sshHost,
+      containerName
+        ? replacingDockerRun(containerName, runArgs)
+        : remoteCommand(['docker', 'run', '--rm', ...runArgs]),
     ];
   } else {
     const condaEnv = process.env.CONDA_ENV_NAME || 'bigslice';
@@ -131,13 +143,13 @@ export async function runBiGSlice(options: BiGSliceOptions): Promise<BiGSliceRes
 
     child.stdout?.on('data', (data) => {
       const chunk = data.toString();
-      stdout += chunk;
+      stdout = appendTail(stdout, chunk);
       logStream?.write(chunk);
     });
 
     child.stderr?.on('data', (data) => {
       const chunk = data.toString();
-      stderr += chunk;
+      stderr = appendTail(stderr, chunk);
       logStream?.write(chunk);
     });
 
@@ -188,8 +200,8 @@ export interface BiGSliceParseResult {
 
 /**
  * Reads {outputDir}/reports/<id>/data.db via a stdlib Python helper (the app has no SQLite driver).
- * Failures resolve to empty results. The report does not record its model, so `tier` is stamped
- * onto every row: the two models number families independently.
+ * Failures reject, so the job fails instead of completing with no matches. The report does not
+ * record its model, so `tier` is stamped onto every row: the two models number families independently.
  */
 export async function parseBiGSliceResults(
   outputDir: string,
@@ -204,9 +216,12 @@ export async function parseBiGSliceResults(
   const scriptPath = process.env.BIGSLICE_PARSE_SCRIPT
     || join(process.cwd(), 'src', 'lib', 'bigslice', 'parse_report.py');
 
-  const empty: BiGSliceParseResult = { queryName: sanitizedQueryName, results: [], totalMatches: 0 };
-
-  return new Promise((resolve) => {
+  // Every failure rejects. It used to resolve to an empty result -- the same value
+  // as a query that matched nothing -- so a session whose report could not be read
+  // was stored as "completed, 0 matches", and the 24 h duplicate check handed that
+  // to anyone who uploaded the same files. Rejecting fails the job instead: the
+  // session is marked failed with the reason and can be resubmitted.
+  return new Promise((resolve, reject) => {
     const child = spawn(python, [scriptPath, outputDir, sanitizedQueryName, filenameMapPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -218,36 +233,29 @@ export async function parseBiGSliceResults(
 
     child.on('close', (code) => {
       if (code !== 0) {
-        console.error(`parse_report.py exited ${code}: ${stderr}`);
-        resolve(empty);
+        reject(new Error(`parse_report.py exited ${code}: ${stderr.trim().slice(-500)}`));
         return;
       }
+      let parsed: { results?: unknown };
       try {
-        const parsed = JSON.parse(stdout);
-        const rows: Omit<BiGSliceQueryResult, 'tier'>[] = Array.isArray(parsed.results) ? parsed.results : [];
-        const results: BiGSliceQueryResult[] = rows.map((row) => ({ ...row, tier }));
-        console.log(`Parsed ${results.length} BiG-SLiCE results for ${sanitizedQueryName}`);
-        resolve({ queryName: sanitizedQueryName, results, totalMatches: results.length });
-      } catch (error) {
-        console.error('Failed to parse parse_report.py output:', error, stdout.slice(0, 500));
-        resolve(empty);
+        parsed = JSON.parse(stdout);
+      } catch {
+        reject(new Error(`parse_report.py printed no JSON: ${stdout.slice(0, 200)}`));
+        return;
       }
+      if (!Array.isArray(parsed.results)) {
+        reject(new Error('parse_report.py output has no results array'));
+        return;
+      }
+      const rows = parsed.results as Omit<BiGSliceQueryResult, 'tier'>[];
+      const results: BiGSliceQueryResult[] = rows.map((row) => ({ ...row, tier }));
+      console.log(`Parsed ${results.length} BiG-SLiCE results for ${sanitizedQueryName}`);
+      resolve({ queryName: sanitizedQueryName, results, totalMatches: results.length });
     });
 
     child.on('error', (error) => {
-      console.error('parse_report.py spawn error:', error);
-      resolve(empty);
+      reject(new Error(`parse_report.py could not be started: ${error.message}`));
     });
-  });
-}
-
-function sshDockerImageExists(sshHost: string, image: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn('ssh', [...SSH_OPTS, sshHost, 'docker', 'image', 'inspect', image], {
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    child.on('close', (exitCode) => resolve(exitCode === 0));
-    child.on('error', () => resolve(false));
   });
 }
 
@@ -255,7 +263,7 @@ function sshDockerImageExists(sshHost: string, image: string): Promise<boolean> 
 function sshDockerBuildImage(sshHost: string, image: string, buildContext: string): Promise<boolean> {
   return new Promise((resolve) => {
     console.log(`Rebuilding BiG-SLiCE image ${image} on ${sshHost} from ${buildContext}`);
-    const child = spawn('ssh', [...SSH_OPTS, sshHost, 'sh', `${buildContext}/build.sh`, image], {
+    const child = spawn('ssh', [...SSH_OPTS, sshHost, remoteCommand(['sh', `${buildContext}/build.sh`, image])], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout?.on('data', (d) => console.log(`[bigslice build] ${d.toString().trimEnd()}`));
@@ -274,13 +282,19 @@ function sshDockerBuildImage(sshHost: string, image: string, buildContext: strin
 export async function checkBiGSliceAvailability(): Promise<boolean> {
   const execMode = process.env.BIGSLICE_EXEC_MODE || 'local';
 
-  // The remote host periodically cleans images, so a missing one is rebuilt and re-checked.
+  // The remote host periodically cleans images, so a missing one is rebuilt and re-checked. A check
+  // that could not reach the host or its daemon is not a missing image: log it, don't rebuild.
   if (execMode === 'ssh-docker') {
     const sshHost = process.env.BIGSLICE_SSH_HOST || 'docker-host';
     const image = process.env.BIGSLICE_DOCKER_IMAGE || 'bigslice:2.0.2';
 
-    if (await sshDockerImageExists(sshHost, image)) {
+    const { state, detail } = await remoteImageState(sshHost, image, SSH_OPTS);
+    if (state === 'present') {
       return true;
+    }
+    if (state === 'unchecked') {
+      console.error(`Could not check BiG-SLiCE image ${image} on ${sshHost} (${detail}); not rebuilding`);
+      return false;
     }
 
     const buildContext = process.env.BIGSLICE_BUILD_CONTEXT || '/data/bgc-atlas/docker/bigslice';
@@ -289,7 +303,7 @@ export async function checkBiGSliceAvailability(): Promise<boolean> {
     if (!built) {
       return false;
     }
-    return sshDockerImageExists(sshHost, image);
+    return (await remoteImageState(sshHost, image, SSH_OPTS)).state === 'present';
   }
 
   const condaEnv = process.env.CONDA_ENV_NAME || 'bigslice';

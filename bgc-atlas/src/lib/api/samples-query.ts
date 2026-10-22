@@ -300,6 +300,7 @@ export const buildBaseFilters = (params: URLSearchParams) => {
         OR sb.environment_material ILIKE ${like}
         OR sb.host_scientific_name ILIKE ${like}
         OR sb.primary_biome ILIKE ${like}
+        OR EXISTS (SELECT 1 FROM UNNEST(sb.study_titles) AS st(title) WHERE title ILIKE ${like})
       )`
     );
   }

@@ -9,6 +9,9 @@ import { Prisma } from '@prisma/client';
 
 import prisma from '@/lib/prisma';
 import {
+  ANTISMASH_VIEWER_BUSY_MESSAGE,
+  antismashExtractionLineFull,
+  antismashExtractionWouldStart,
   findAntismashResultsJsonPath,
   getAntismashRun,
   getAntismashRunExtractionDir,
@@ -16,6 +19,10 @@ import {
   touchAntismashRunExtraction,
 } from '@/lib/api/antismash';
 import { antismashFailureMessage, serverError } from '@/lib/api/errors';
+import { findBgcRedirect, redirectToTwin } from '@/lib/bgc/redirect';
+import { cancelBodyOnAbort, isHead } from '@/lib/http/abandoned-body';
+import { createConcurrencyGate, GateBusyError } from '@/lib/api/concurrency-gate';
+import { chargeViewerWork, viewerBusyResponse } from '@/lib/api/antismash-viewer-limit';
 
 const isReadable = async (filePath: string) => {
   try {
@@ -83,6 +90,8 @@ type TrimPhase = 'trimming' | 'ready' | 'error';
 
 interface TrimState {
   status: TrimPhase;
+  /** Refused at TRIM_GATE: the reader's message, and a 503 rather than a 500. */
+  busy?: boolean;
   startedAt: number;
   recordId?: string | null;
   regionNumber?: string | null;
@@ -95,6 +104,13 @@ interface TrimState {
  * fork_mode); the trimmed file on disk is the durable record.
  */
 const trimStates = new Map<string, TrimState>();
+
+/**
+ * Trims running at once, box-wide. Each streams a whole run's results JSON -- up to
+ * 14.9 GB -- through Python, and the per-BGC dedup above does nothing against many
+ * different BGCs. A queued trim reports 'trimming' like a running one.
+ */
+const TRIM_GATE = createConcurrencyGate(2, 15 * 60_000, 16);
 
 function startRegionTrim(
   bgcId: string,
@@ -111,7 +127,7 @@ function startRegionTrim(
   const state: TrimState = { status: 'trimming', startedAt: Date.now() };
   trimStates.set(bgcId, state);
 
-  void runRegionTrim(jsonPath, recordId, regionNumber, outPath)
+  void TRIM_GATE.run(() => runRegionTrim(jsonPath, recordId, regionNumber, outPath))
     .then((result) => {
       trimStates.set(bgcId, {
         ...state,
@@ -124,7 +140,10 @@ function startRegionTrim(
       trimStates.set(bgcId, {
         ...state,
         status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to prepare region data.',
+        busy: error instanceof GateBusyError,
+        message: error instanceof GateBusyError
+          ? ANTISMASH_VIEWER_BUSY_MESSAGE
+          : error instanceof Error ? error.message : 'Failed to prepare region data.',
       });
     });
 
@@ -200,7 +219,7 @@ interface RouteParams {
  *   200  the trimmed region JSON, streamed from disk
  *   202  {status:'preparing', stage} — work started, poll this endpoint again
  */
-export async function GET(_request: Request, { params }: RouteParams) {
+export async function GET(request: Request, { params }: RouteParams) {
   try {
     const { id: bgcId } = await params;
 
@@ -222,6 +241,14 @@ export async function GET(_request: Request, { params }: RouteParams) {
     `);
 
     if (rows.length === 0) {
+      // A removed duplicate (migration 0124) redirects to its twin, as /api/bgcs/<id>
+      // and its download do; this route alone answered 404.
+      const twin = await findBgcRedirect(bgcId);
+      if (twin) {
+        const target = new URL(request.url);
+        target.pathname = target.pathname.replace(/\/[^/]+\/antismash-json$/, `/${twin}/antismash-json`);
+        return redirectToTwin(target);
+      }
       return NextResponse.json(
         { success: false, error: 'BGC not found' },
         { status: 404 },
@@ -261,6 +288,7 @@ export async function GET(_request: Request, { params }: RouteParams) {
     if (!(await isReadable(trimmedPath))) {
       if (trimState?.status === 'error') {
         trimStates.delete(bgcId);
+        if (trimState.busy) return viewerBusyResponse(ANTISMASH_VIEWER_BUSY_MESSAGE);
         return NextResponse.json(
           { success: false, error: antismashFailureMessage('error', trimState.message, `antiSMASH region trim for ${bgcId}`) },
           { status: 500 },
@@ -270,12 +298,21 @@ export async function GET(_request: Request, { params }: RouteParams) {
         return preparing('trimming', trimState.startedAt);
       }
 
+      // Starting an extraction is charged to the caller; joining or polling one is not.
+      if (await antismashExtractionWouldStart(runId)) {
+        if (antismashExtractionLineFull()) return viewerBusyResponse(ANTISMASH_VIEWER_BUSY_MESSAGE);
+        const limited = await chargeViewerWork(request);
+        if (limited) return limited;
+      }
       const extraction = await startAntismashRunExtraction(run);
       if (extraction.status === 'missing-file') {
         return NextResponse.json(
           { success: false, error: antismashFailureMessage('missing-file', extraction.message, `antiSMASH extraction for ${bgcId}`) },
           { status: 404 },
         );
+      }
+      if (extraction.status === 'error' && extraction.busy) {
+        return viewerBusyResponse(extraction.message ?? ANTISMASH_VIEWER_BUSY_MESSAGE);
       }
       if (extraction.status === 'error') {
         return NextResponse.json(
@@ -295,6 +332,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
         );
       }
 
+      if (TRIM_GATE.full) return viewerBusyResponse(ANTISMASH_VIEWER_BUSY_MESSAGE);
+      const limited = await chargeViewerWork(request);
+      if (limited) return limited;
       const started = startRegionTrim(bgcId, jsonPath, contig, regionNumber, trimmedPath);
       if (started.status === 'error') {
         trimStates.delete(bgcId);
@@ -316,8 +356,14 @@ export async function GET(_request: Request, { params }: RouteParams) {
     // Eviction ages runs from last use.
     touchAntismashRunExtraction(runId);
 
-    const nodeStream = createReadStream(trimmedPath);
-    return new Response(nodeToWebStream(nodeStream), { status: 200, headers });
+    // HEAD: the file is not opened. Next drops a HEAD's body unread, and a read
+    // stream nobody consumes keeps its file descriptor open for good.
+    if (isHead(request)) return new Response(null, { status: 200, headers });
+
+    const body = nodeToWebStream(createReadStream(trimmedPath));
+    // Closes the file if the client leaves before the body starts.
+    cancelBodyOnAbort(request, body);
+    return new Response(body, { status: 200, headers });
   } catch (error) {
     return serverError(error, 'Error serving antiSMASH JSON');
   }

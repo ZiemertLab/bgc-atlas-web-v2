@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
+import { withShare } from '@/components/seo/share-metadata';
 
-export const metadata: Metadata = {
+export const metadata: Metadata = withShare({
   // A plain-string title consumes the root's template, so detail pages would lose the suffix.
   title: { default: 'Gene Cluster Families (GCFs)', template: '%s | BGC Atlas' },
   description:
@@ -16,7 +17,7 @@ export const metadata: Metadata = {
     'BiG-SLiCE',
   ],
   alternates: { canonical: '/gcfs' },
-};
+});
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return children;

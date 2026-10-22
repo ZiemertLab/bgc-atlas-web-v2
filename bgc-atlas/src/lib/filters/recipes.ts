@@ -16,14 +16,17 @@ const hasField = (fields: FilterFieldDefinition[], id: string) =>
 
 const buildGroup = (
   fields: FilterFieldDefinition[],
-  specs: Array<{ field: string; operator: FilterOperator; value: FilterValue }>,
+  specs: Array<{ field: string; operator: FilterOperator; value: FilterValue; threshold?: number }>,
   operator: FilterGroup['operator'] = 'AND'
 ) => {
   const group = createDefaultFilterGroup();
   group.operator = operator;
   group.conditions = specs
     .filter((spec) => hasField(fields, spec.field))
-    .map((spec) => createFilterCondition(spec.field, spec.operator, spec.value));
+    .map((spec) => ({
+      ...createFilterCondition(spec.field, spec.operator, spec.value),
+      ...(spec.threshold !== undefined && { threshold: spec.threshold }),
+    }));
   return group;
 };
 
@@ -192,20 +195,21 @@ export const gcfFilterRecipes: FilterRecipe[] = [
   {
     id: 'marine-specialists',
     name: 'Marine specialists',
-    // domEcosystem is the precomputed argmax over level 3 (where marine lives); `biome contains`
-    // would match one marine member in thousands. The member floor keeps this a shortlist.
-    description: 'Families whose members are at least 80% marine, with 50+ members.',
+    // The level-3 Ecosystem share filter at 90% (eco_l3_ge90, precomputed for both backends).
+    // The share is of members WITH a level-3 ecosystem, which the description names. The member
+    // floor keeps this a shortlist and stops a two-member family reading as a specialist.
+    description: 'Families with 50+ members, at least 90% of those with a level-3 GOLD ecosystem being marine.',
     build: (fields) =>
       buildGroup(fields, [
-        { field: 'domEcosystem', operator: 'equals', value: 'Marine' },
-        { field: 'domEcosystemPct', operator: 'gte', value: 80 },
+        { field: 'ecoShareL3', operator: 'equals', value: 'Marine', threshold: 90 },
         { field: 'memberBgcCount', operator: 'gte', value: 50 },
       ]),
   },
   {
     id: 'ecosystem-specialists',
     name: 'Ecosystem specialists',
-    description: 'Families with 90%+ of members in a single top-level GOLD ecosystem.',
+    // Of the members WITH a level-1 ecosystem (max_pct_l1, rounded to 1 dp: 89.96% passes).
+    description: 'Families with 50+ members, 90%+ of those with a top-level GOLD ecosystem in a single one.',
     build: (fields) =>
       buildGroup(fields, [
         { field: 'ecosystemSpecificity', operator: 'gte', value: 90 },

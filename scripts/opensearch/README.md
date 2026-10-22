@@ -1,6 +1,6 @@
 # OpenSearch with security on
 
-The atlas indexes live in one single-node OpenSearch 2.19 container on a
+The atlas indexes live in one single-node OpenSearch 2.19 container on the
 docker host. Its security plugin is on: TLS on the REST and transport layers,
 certificates from a private CA, and three users.
 

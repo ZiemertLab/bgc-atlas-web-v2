@@ -2,6 +2,7 @@
 import type { Study } from '@/lib/types';
 import type { ExportColumn } from '@/lib/export/format';
 import { SOURCE_TYPE_LABELS } from '@/lib/utils/chart-utils';
+import { studyTitle } from '@/lib/utils/accession';
 import { formatDataSourceName } from '@/lib/utils/data-source-name';
 
 /** An ecosystem share map as one cell: "Aquatic 62.1%; Terrestrial 37.9%". */
@@ -31,7 +32,7 @@ const sourceTypeCounts = (counts: Record<string, number> | null): string =>
 
 export const STUDY_EXPORT_COLUMNS: ExportColumn<Study>[] = [
   { id: 'study_id', label: 'Study ID', value: (s) => s.study_id },
-  { id: 'title', label: 'Title', value: (s) => s.title || s.study_name || s.study_key },
+  { id: 'title', label: 'Title', value: (s) => studyTitle(s) },
   { id: 'center', label: 'Center', value: (s) => s.center_name ?? '' },
   { id: 'bioproject', label: 'BioProject', value: (s) => s.bioproject ?? '' },
   { id: 'accession', label: 'Accession', value: (s) => s.accession ?? '' },

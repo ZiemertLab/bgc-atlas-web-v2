@@ -1,5 +1,5 @@
 import cron, { type ScheduledTask } from 'node-cron';
-import { cleanupExpiredExports } from '@/lib/cleanup/export-cleanup';
+import { cleanupExpiredExports, sweepStalePartialExports } from '@/lib/cleanup/export-cleanup';
 import { cleanupAntismashExtractions } from '@/lib/cleanup/antismash-extraction-cleanup';
 
 let cleanupJob: ScheduledTask | null = null;
@@ -37,6 +37,17 @@ export function initializeCronJobs() {
       }
     } catch (error) {
       console.error('Error during scheduled cleanup:', error);
+    }
+    try {
+      const partials = await sweepStalePartialExports();
+      if (partials.deleted.length > 0) {
+        console.log(`Deleted ${partials.deleted.length} abandoned partial export(s):`, partials.deleted);
+      }
+      if (partials.errors.length > 0) {
+        console.error('Partial export sweep errors:', partials.errors);
+      }
+    } catch (error) {
+      console.error('Error during partial export sweep:', error);
     }
   });
 

@@ -17,6 +17,11 @@ except ImportError:  # pragma: no cover - direct `python tools/...` invocation
 # As lib/gcf/category-share.ts spells them; build_browse_corpus.py selects these.
 PRODUCT_CATEGORIES = ("NRPS", "PKS", "RiPP", "terpene", "saccharide", "other")
 
+# Share thresholds and GOLD ecosystem levels of gcf_distributions_mv: the gcf_browse
+# fields product_types_ge<T>, eco_l<n>_ge<T> and resolved_pct_l<n>.
+SHARE_THRESHOLDS = (10, 50, 90)
+ECOSYSTEM_LEVELS = (1, 2, 3, 4, 5)
+
 
 # Deep `from + size` paging limit per entity. Past OpenSearch's 10,000 default the
 # route falls back to SQL OFFSET, which times out on deep pages. The cost is a
@@ -126,6 +131,26 @@ ENTITY_PROPERTIES = {
         # From gcf_distributions_mv so the SQL fallback answers identically.
         "dom_ecosystem_l1": {"type": "keyword"},
         "dom_ecosystem_l3": {"type": "keyword"},
+        # The argmax at the remaining levels; every level counts each primary member once
+        # (its assembly's first-ranked sample). max_pct_l* below is its share of RESOLVED members.
+        **{f"dom_ecosystem_l{n}": {"type": "keyword"} for n in (2, 4, 5)},
+        # Share filters, transported from gcf_distributions_mv rather than derived here so the
+        # SQL fallback answers identically: both read arrays built from the same 2-dp share.
+        # product_types_ge<T>: antiSMASH products carried by >= T% of primary members
+        #   (threshold 0, "any member", stays on product_terms).
+        # eco_l<n>_ge<T>: level-n GOLD ecosystems holding >= T% of the members that HAVE a
+        #   level-n ecosystem. resolved_pct_l<n>: that denominator, as % of primary members.
+        **{f"product_types_ge{t}": {"type": "keyword"} for t in SHARE_THRESHOLDS},
+        **{f"eco_l{n}_ge{t}": {"type": "keyword"}
+           for n in ECOSYSTEM_LEVELS for t in SHARE_THRESHOLDS},
+        **{f"resolved_pct_l{n}": {"type": "float"} for n in ECOSYSTEM_LEVELS},
+        # eco_l<n>_any: every level-n ecosystem at least one member has (the keys of
+        # biome_distribution_l<n>; L1 carries the 'Host-assoc.: Plants' bucket like eco_l1_ge*).
+        # The Ecosystem share filter's "any member"; the SQL fallback reads the same jsonb keys.
+        **{f"eco_l{n}_any": {"type": "keyword"} for n in ECOSYSTEM_LEVELS},
+        # {product: % of primary members carrying it}, display only. Keyed by ~100 antiSMASH
+        # products, so it must stay out of the dynamic mapping.
+        "product_type_member_share": {"type": "object", "enabled": False},
         # resolved_biome_level_1..3 of every member (GOLD and ENVO mixed); not the
         # same vocabulary as biome_distribution_l*.
         "biome_terms": {"type": "keyword"},

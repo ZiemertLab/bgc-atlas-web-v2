@@ -1,12 +1,15 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
+import { Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { useSearchParams, usePathname, useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { readNumber, readOneOf, readPage, readPageSize } from '@/lib/url-state';
+import { formatRangeLabel } from '@/lib/filter-chip-labels';
+import { useExternalNavigationKey, useMirrorToUrl } from '@/lib/hooks/use-mirror-to-url';
 import { MainLayout } from '@/components/layout/main-layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, Loader2, AlertCircle, Filter, ArrowUpRight } from 'lucide-react';
+import { Search, Loader2, Filter, ArrowUpRight } from 'lucide-react';
 import { Pagination } from '@/components/ui/pagination';
 import { ResizableTable } from '@/components/ui/resizable-table';
 import { TableSkeleton } from '@/components/ui/loading-skeleton';
@@ -20,8 +23,11 @@ import { GcfNamingDisclosure } from '@/components/ui/gcf-naming-disclosure';
 import { RetiredFamilyHint } from '@/components/gcf/retired-family-hint';
 import { FRAGMENTED_TOOLTIP, GCF_NAME_TOOLTIP, TIER_EXPLAINER } from '@/lib/gcf-naming';
 import { ExportMenu } from '@/components/ui/export-menu';
+import { ListErrorState } from '@/components/ui/list-error-state';
+import { isDeepPageRefusal } from '@/lib/api-client';
+import { useLastKnown } from '@/lib/hooks/use-last-known';
 import { downloadText, exportFilename, serializeExport, type ExportFormat } from '@/lib/export/format';
-import { GCF_TABLE_EXPORT_COLUMNS } from '@/lib/export/gcf-columns';
+import { gcfTableExportColumns } from '@/lib/export/gcf-columns';
 import { formatBgcLength } from '@/lib/utils/bgc-length';
 import { GcfCharts } from '@/components/charts/gcf-charts';
 import { GcfTaxonomyComposition } from '@/components/charts/gcf-taxonomy-composition';
@@ -61,18 +67,63 @@ import {
   canonicalCategory,
 } from '@/lib/gcf/category-share';
 import { KnownClusterCell } from '@/components/ui/known-cluster-cell';
+import { CombinedShareMatchCell, ShareMatchCell } from '@/components/gcf/share-match-cell';
+import {
+  ecosystemColumnTooltip,
+  ecosystemResolvedNote,
+  ecosystemValueLabel,
+  shareConditionLabel,
+  shareConditionTooltip,
+  shareConditionsOf,
+} from '@/lib/gcf/share-display';
 import { RefetchFrame } from '@/components/ui/refetch-frame';
 import {
   advancedFilterRequestParam,
   unreadableAdvancedFilterParam,
 } from '@/lib/filters/advanced-filter-param';
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+const DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * Share conditions that get a column each; past this, one combined column. The
+ * default set already overflows a 1440px screen, so each auto-shown column is
+ * paid for in scrolling.
+ */
+const MAX_SHARE_MATCH_COLUMNS = 2;
+const COMBINED_SHARE_MATCH_COLUMN = 'shareMatches';
+
+/**
+ * The sorts a link may carry: the table's sortable column ids, plus the share
+ * sort the category column sends. Anything else reads as the default, so a junk
+ * value never paints a sort arrow over rows the server ordered by name.
+ */
+const SORT_FIELDS = [
+  'id',
+  'name',
+  'familyClass',
+  'petName',
+  'memberCount',
+  'assemblyCount',
+  'length',
+  'biomeDistribution',
+  'avgScore',
+  CATEGORY_SHARE_SORT_FIELD,
+] as const;
+
 export default function GCFsPage() {
   return (
     <Suspense fallback={null}>
-      <GCFsPageInner />
+      <GCFsPageKeyed />
     </Suspense>
   );
+}
+
+/** Remounts the page on a same-route navigation it did not write, so it re-seeds
+ *  from the URL like a fresh visit (see useMirrorToUrl). */
+function GCFsPageKeyed() {
+  const navKey = useExternalNavigationKey();
+  return <GCFsPageInner key={navKey} />;
 }
 
 function GCFsPageInner() {
@@ -81,13 +132,17 @@ function GCFsPageInner() {
   const paramOr = (key: string, fallback = '') => searchParams.get(key) ?? fallback;
 
   const [mounted, setMounted] = useState(false);
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  const [currentPage, setCurrentPage] = useState(() => readPage(searchParams.get('page')));
+  const [pageSize, setPageSize] = useState(() =>
+    readPageSize(searchParams.get('size'), PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE),
+  );
   // Seed debouncedSearch too, or the first request goes out unfiltered before the debounce catches up.
   const [search, setSearch] = useState(() => paramOr('search'));
   const [debouncedSearch, setDebouncedSearch] = useState(() => paramOr('search'));
-  const [minBgcs, setMinBgcs] = useState<string>(() => paramOr('minBgcs'));
-  const [maxBgcs, setMaxBgcs] = useState<string>(() => paramOr('maxBgcs'));
+  // Both backends ignore a bound that is not a number, so dropping one here
+  // narrows nothing the server would have; it only keeps a chip from showing it.
+  const [minBgcs, setMinBgcs] = useState<string>(() => readNumber(paramOr('minBgcs')));
+  const [maxBgcs, setMaxBgcs] = useState<string>(() => readNumber(paramOr('maxBgcs')));
   const [productType, setProductType] = useState<string>(() => paramOr('productType'));
   // '' = no threshold. An old link with only ?productType= meant "any member", i.e. 0 for a real category;
   // free text naming no category keeps '' and the old text match.
@@ -102,7 +157,9 @@ function GCFsPageInner() {
     const fromUrl = paramOr('familyClass').toLowerCase();
     return isFamilyClass(fromUrl) ? fromUrl : '';
   });
-  const [sortField, setSortField] = useState<string>(() => paramOr('sortField', 'memberCount'));
+  const [sortField, setSortField] = useState<string>(
+    () => readOneOf(paramOr('sortField'), SORT_FIELDS, 'memberCount'),
+  );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(
     () => (paramOr('sortOrder') === 'asc' ? 'asc' : 'desc'),
   );
@@ -110,11 +167,19 @@ function GCFsPageInner() {
   const [taxonomyRank, setTaxonomyRank] = useState<TaxonomyRank>('phylum');
   const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>({});
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const [advancedFilters, setAdvancedFilters] = useState<FilterGroup | null>(null);
-  const [unreadableAdvancedParam, setUnreadableAdvancedParam] = useState<string | null>(null);
-  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState<FilterGroup>(() => createDefaultFilterGroup());
-  const pathname = usePathname();
-  const router = useRouter();
+  // Seeded in initializers, as on /studies: the URL mirror below owns this
+  // param too, and its first write must already see the parsed value. An
+  // unreadable value is kept, and forwarded verbatim, so the SERVER refuses it;
+  // dropping it is what made a truncated link answer the whole corpus at 200.
+  const [advancedFilters, setAdvancedFilters] = useState<FilterGroup | null>(() =>
+    deserializeFilterGroup(searchParams.get('advancedFilters')),
+  );
+  const [unreadableAdvancedParam, setUnreadableAdvancedParam] = useState<string | null>(() =>
+    unreadableAdvancedFilterParam(searchParams.get('advancedFilters')),
+  );
+  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState<FilterGroup>(
+    () => deserializeFilterGroup(searchParams.get('advancedFilters')) ?? createDefaultFilterGroup(),
+  );
   const hasAdvancedFiltersApplied = hasFilterRules(advancedFilters);
   const hasDraftAdvancedFilters = hasFilterRules(advancedFiltersDraft);
   const advancedFiltersEncoded = useMemo(
@@ -126,15 +191,37 @@ function GCFsPageInner() {
     advancedFiltersEncoded,
     unreadableAdvancedParam,
   );
+  // "Why this row matched": one column per applied share condition (Product,
+  // Ecosystem share). Derived from the APPLIED filters, so removing a condition
+  // removes its column; a reader's Columns choice for it is kept in
+  // columnVisibility under a column id stable for that condition.
+  const shareConditions = useMemo(
+    () => shareConditionsOf(hasAdvancedFiltersApplied ? advancedFilters : null),
+    [advancedFilters, hasAdvancedFiltersApplied],
+  );
   const advancedFilterSummaries = useMemo(
     () => (hasAdvancedFiltersApplied && advancedFilters ? summarizeFilterGroup(advancedFilters, gcfFilterFields) : []),
     [advancedFilters, hasAdvancedFiltersApplied]
   );
 
+  // Debounce search input. The page resets only when the search actually
+  // changed: this also runs on mount, and resetting then would throw away a
+  // ?page= the link arrived with. Anything that sets debouncedSearch directly
+  // goes through clearSearchNow, which keeps this ref in step.
+  const lastDebouncedSearch = useRef(search);
+  const clearSearchNow = () => {
+    setSearch('');
+    setDebouncedSearch('');
+    lastDebouncedSearch.current = '';
+    setCurrentPage(0);
+  };
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-      setCurrentPage(0);
+      if (search !== lastDebouncedSearch.current) {
+        lastDebouncedSearch.current = search;
+        setCurrentPage(0);
+      }
     }, 500);
 
     return () => clearTimeout(timer);
@@ -144,50 +231,27 @@ function GCFsPageInner() {
     setMounted(true);
   }, []);
 
-  const advancedFiltersParam = searchParams.get('advancedFilters');
-  useEffect(() => {
-    if (!advancedFiltersParam) {
-      setAdvancedFilters(null);
-      setUnreadableAdvancedParam(null);
-      return;
-    }
-    const parsed = deserializeFilterGroup(advancedFiltersParam);
-    if (parsed) {
-      setAdvancedFilters(parsed);
-      setAdvancedFiltersDraft(parsed);
-      setUnreadableAdvancedParam(null);
-    } else {
-      setAdvancedFilters(null);
-      // Forwarded verbatim so the server refuses it; dropping it would make a truncated link return the whole corpus.
-      setUnreadableAdvancedParam(unreadableAdvancedFilterParam(advancedFiltersParam));
-    }
-  }, [advancedFiltersParam]);
-
-  // Mirror filters into the URL (replace, not push, to spare history). Skip when it already matches, or the
-  // changed searchParams re-run this effect in a loop. Starts from searchParams so advancedFilters survives.
-  useEffect(() => {
-    if (!mounted || !pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    const sync = (key: string, value: string, omitWhen = '') => {
-      if (value && value !== omitWhen) params.set(key, value);
-      else params.delete(key);
-    };
-    sync('search', debouncedSearch);
-    sync('minBgcs', minBgcs);
-    sync('maxBgcs', maxBgcs);
-    sync('productType', productType);
-    sync('categoryMinShare', productType ? categoryMinShare : '');
-    sync('familyClass', familyClass);
-    sync('sortField', sortField, 'memberCount');
-    sync('sortOrder', sortOrder, 'desc');
-
-    const query = params.toString();
-    if (query === searchParams.toString()) return;
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
-  }, [
-    mounted, pathname, router, searchParams,
-    debouncedSearch, minBgcs, maxBgcs, productType, categoryMinShare, familyClass, sortField, sortOrder,
-  ]);
+  // Mirror filters, sort and paging back into the URL (see useMirrorToUrl for
+  // replace-not-push, omitted defaults and the one-writer contract).
+  // advancedFilters goes through the same write: a separate replace() in the
+  // apply handler raced this one and put the old value back. The forwarded value,
+  // not the encoded state, so an unreadable link keeps its evidence in the URL.
+  useMirrorToUrl(
+    [
+      ['search', debouncedSearch],
+      ['minBgcs', minBgcs],
+      ['maxBgcs', maxBgcs],
+      ['productType', productType],
+      ['categoryMinShare', productType ? categoryMinShare : ''],
+      ['familyClass', familyClass],
+      ['sortField', sortField, 'memberCount'],
+      ['sortOrder', sortOrder, 'desc'],
+      ['page', currentPage + 1, 1],
+      ['size', pageSize, DEFAULT_PAGE_SIZE],
+      ['advancedFilters', advancedFiltersRequestParam ?? ''],
+    ],
+    mounted,
+  );
 
   // The share sort needs a selected category; without one both backends fall back to name order.
   useEffect(() => {
@@ -197,18 +261,6 @@ function GCFsPageInner() {
     }
   }, [sortField, selectedCategory]);
 
-  const updateAdvancedFiltersInUrl = (encoded: string) => {
-    if (!pathname) return;
-    const params = new URLSearchParams(searchParams.toString());
-    if (encoded) {
-      params.set('advancedFilters', encoded);
-    } else {
-      params.delete('advancedFilters');
-    }
-    const query = params.toString();
-    router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
-  };
-
   const applyAdvancedFilters = () => {
     const hasDraft = hasFilterRules(advancedFiltersDraft);
     const nextFilters = hasDraft ? advancedFiltersDraft : null;
@@ -216,7 +268,6 @@ function GCFsPageInner() {
     setUnreadableAdvancedParam(null);
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl(serializeFilterGroup(nextFilters));
   };
 
   const clearAdvancedFilters = () => {
@@ -225,7 +276,6 @@ function GCFsPageInner() {
     setAdvancedFiltersDraft(createDefaultFilterGroup());
     setAdvancedFiltersOpen(false);
     setCurrentPage(0);
-    updateAdvancedFiltersInUrl('');
   };
 
   // Filters only, no paging/sort; the taxonomic composition panel aggregates over exactly this object.
@@ -249,7 +299,7 @@ function GCFsPageInner() {
     // Only needed when sorting by GOLD Ecosystem; otherwise a level change switches the column client-side without a refetch.
     ...(sortField === 'biomeDistribution' ? { ecosystemLevel } : {}),
   };
-  const { data, isLoading, isFetching, error, hasLoaded } = useGcfs({
+  const { data, isLoading, isFetching, error, hasLoaded, refetch } = useGcfs({
     limit: pageSize,
     offset: currentPage * pageSize,
     ...listParams,
@@ -259,17 +309,28 @@ function GCFsPageInner() {
 
   const gcfs = data?.data?.data ?? [];
   const total = data?.data?.total ?? 0;
-  const totalPages = Math.ceil(total / pageSize);
+
+  // Under a deep-page refusal the pager stays, at the last total the list
+  // reported, so the reader can step back; any other error hides it, where
+  // "Showing 1–0 of 0" would read as an empty result.
+  const pagerShown = !error || isDeepPageRefusal(error);
+  // Keyed on the filters alone, as on /bgcs: a sort change keeps the same total.
+  const pagerItems = useLastKnown(total, !error, JSON.stringify(narrowingParams));
+  const pagerPages = Math.ceil(pagerItems / pageSize);
 
   const getTaxonomyDistributionForRank = useCallback((gcf: GcfListItem) => {
     const distributions: Partial<Record<TaxonomyRank, Record<string, number>>> = {
       ...(gcf.taxonomyDistributionByRank ?? {}),
     };
+    // The trimmed per-rank maps come with their untrimmed taxon counts; the
+    // domain fallback below is a full map, so it needs no count.
+    let taxaCount = gcf.taxonomyTaxaCountByRank?.[taxonomyRank];
 
     if ((!distributions.domain || Object.keys(distributions.domain).length === 0) &&
       gcf.taxonomyDistribution &&
       Object.keys(gcf.taxonomyDistribution).length > 0) {
       distributions.domain = gcf.taxonomyDistribution;
+      if (taxonomyRank === 'domain') taxaCount = undefined;
     }
 
     const selected = distributions[taxonomyRank];
@@ -277,13 +338,15 @@ function GCFsPageInner() {
       return null;
     }
 
-    return { rank: taxonomyRank, distribution: selected };
+    return { rank: taxonomyRank, distribution: selected, taxaCount };
   }, [taxonomyRank]);
 
   const handleSort = (columnId: string, direction: 'asc' | 'desc') => {
     // The category column sorts by the filtered category's share of members.
     setSortField(columnId === 'productCategories' ? CATEGORY_SHARE_SORT_FIELD : columnId);
     setSortOrder(direction);
+    // Page 7 of a reordered list is not the page the reader was on.
+    setCurrentPage(0);
   };
 
   const handlePageChange = (newPage: number) => {
@@ -303,7 +366,7 @@ function GCFsPageInner() {
   const handleExport = (format: ExportFormat) => {
     if (!gcfs.length) return;
     downloadText(
-      serializeExport(gcfs, GCF_TABLE_EXPORT_COLUMNS, format),
+      serializeExport(gcfs, gcfTableExportColumns(hasAdvancedFiltersApplied ? advancedFilters : null), format),
       exportFilename(`gcfs_page${currentPage + 1}`, gcfs.length, gcfs.length, format),
       format,
     );
@@ -402,6 +465,30 @@ function GCFsPageInner() {
         </Link>
       ),
     },
+    // Beside the member count, which is what each share is a share of.
+    ...(shareConditions.length > MAX_SHARE_MATCH_COLUMNS
+      ? [{
+          id: COMBINED_SHARE_MATCH_COLUMN,
+          label: 'Matched filters',
+          headerTooltip:
+            'Why each row matched the share filters. Product shares are of the family’s members; '
+            + 'ecosystem shares are of the members with an ecosystem at that level. Hover a cell for each in full.',
+          width: 300,
+          visible: columnVisibility[COMBINED_SHARE_MATCH_COLUMN] !== false,
+          renderCell: (gcf: GcfListItem) => (
+            <CombinedShareMatchCell gcf={gcf} queries={shareConditions.map((c) => c.query)} />
+          ),
+        }]
+      : shareConditions.map(({ columnId, query }) => ({
+          id: columnId,
+          label: shareConditionLabel(query),
+          headerTooltip: shareConditionTooltip(query),
+          // Narrow: the figure leads and is what the eye needs;
+          // the cell truncates and its title carries the full sentence.
+          width: 180,
+          visible: columnVisibility[columnId] !== false,
+          renderCell: (gcf: GcfListItem) => <ShareMatchCell gcf={gcf} query={query} />,
+        }))),
     {
       id: 'assemblyCount',
       label: 'Assemblies',
@@ -497,7 +584,12 @@ function GCFsPageInner() {
       headerControl: () => (
         <Select
           value={ecosystemLevel.toString()}
-          onValueChange={(value) => setEcosystemLevel(Number(value))}
+          onValueChange={(value) => {
+            setEcosystemLevel(Number(value));
+            // Sorted by this column, the level decides the row order, so the
+            // page the reader was on no longer exists.
+            if (sortField === 'biomeDistribution') setCurrentPage(0);
+          }}
         >
           <SelectTrigger className="h-6 w-16 text-xs px-2">
             <SelectValue />
@@ -511,7 +603,7 @@ function GCFsPageInner() {
           </SelectContent>
         </Select>
       ),
-      headerTooltip: `Distribution of BGCs across GOLD ecosystem level ${ecosystemLevel} classifications`,
+      headerTooltip: ecosystemColumnTooltip(ecosystemLevel),
       width: 260,
       sortable: true,
       visible: columnVisibility.biomeDistribution !== false,
@@ -526,6 +618,8 @@ function GCFsPageInner() {
             <BiomeDistributionChart
               distribution={distribution}
               height={24}
+              valueLabel={ecosystemValueLabel(ecosystemLevel)}
+              footnote={ecosystemResolvedNote(ecosystemLevel, gcf.ecosystemResolvedPctByLevel?.[ecosystemLevel])}
             />
           </div>
         );
@@ -570,6 +664,7 @@ function GCFsPageInner() {
           <div className="w-full px-1">
             <TaxonomyDistributionChart
               distribution={selection.distribution}
+              taxaCount={selection.taxaCount}
               height={24}
             />
           </div>
@@ -647,11 +742,10 @@ function GCFsPageInner() {
         </span>
       ),
     },
-  ], [columnVisibility, ecosystemLevel, taxonomyRank, getTaxonomyDistributionForRank, selectedCategory]);
+  ], [columnVisibility, ecosystemLevel, taxonomyRank, getTaxonomyDistributionForRank, selectedCategory, sortField, shareConditions]);
 
   const clearFilters = () => {
-    setSearch('');
-    setDebouncedSearch('');
+    clearSearchNow();
     setMinBgcs('');
     setMaxBgcs('');
     setProductType('');
@@ -915,26 +1009,14 @@ function GCFsPageInner() {
               key: 'search',
               label: 'Search',
               value: debouncedSearch,
-              onRemove: () => {
-                setSearch('');
-                setDebouncedSearch('');
-                setCurrentPage(0);
-              }
+              onRemove: clearSearchNow
             }] : []),
-            ...(minBgcs ? [{
-              key: 'minBgcs',
-              label: 'Min BGCs',
-              value: minBgcs,
+            ...(minBgcs || maxBgcs ? [{
+              key: 'bgcs',
+              label: 'BGCs',
+              value: formatRangeLabel(minBgcs, maxBgcs),
               onRemove: () => {
                 setMinBgcs('');
-                setCurrentPage(0);
-              }
-            }] : []),
-            ...(maxBgcs ? [{
-              key: 'maxBgcs',
-              label: 'Max BGCs',
-              value: maxBgcs,
-              onRemove: () => {
                 setMaxBgcs('');
                 setCurrentPage(0);
               }
@@ -991,30 +1073,29 @@ function GCFsPageInner() {
             <ProductCategoryLegend showCombinations />
           </div>
 
-          {!error && !(isLoading && !hasLoaded) && total > 0 && (
+          {pagerShown && !(isLoading && !hasLoaded) && pagerItems > 0 && (
             <div className="mb-4">
               <Pagination
                 currentPage={currentPage}
-                totalPages={totalPages}
-                totalItems={total}
+                totalPages={pagerPages}
+                totalItems={pagerItems}
                 pageSize={pageSize}
                 offset={currentPage * pageSize}
                 onPageChange={handlePageChange}
                 onPageSizeChange={handlePageSizeChange}
-                pageSizeOptions={[25, 50, 100, 200]}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
               />
             </div>
           )}
 
           {error ? (
-            <div className="py-12 text-center">
-              <AlertCircle className="mx-auto mb-4 size-8 text-destructive" />
-              <h3 className="mb-1 text-base font-semibold">Failed to load GCFs</h3>
-              <p className="mb-4 text-sm text-muted-foreground">{error.message}</p>
-              <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-                Retry
-              </Button>
-            </div>
+            <ListErrorState
+              error={error}
+              noun="GCFs"
+              onRetry={refetch}
+              retrying={isFetching}
+              onFirstPage={() => setCurrentPage(0)}
+            />
           ) : isLoading && !hasLoaded ? (
             <div className="space-y-6">
               <ColdLoadHint loading label="Loading GCFs" />
@@ -1037,7 +1118,7 @@ function GCFsPageInner() {
             <RefetchFrame refetching={isFetching} label="Updating GCFs">
               <div className="space-y-3 lg:hidden">
                 {gcfs.map((gcf) => (
-                  <GcfCard key={gcf.id} gcf={gcf} />
+                  <GcfCard key={gcf.id} gcf={gcf} shareQueries={shareConditions.map((c) => c.query)} />
                 ))}
               </div>
               <div className="hidden lg:block">
@@ -1060,17 +1141,17 @@ function GCFsPageInner() {
           )}
         </section>
 
-        {total > 0 && (
+        {pagerShown && pagerItems > 0 && (
           <div className="mt-6">
             <Pagination
               currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={total}
+              totalPages={pagerPages}
+              totalItems={pagerItems}
               pageSize={pageSize}
               offset={currentPage * pageSize}
               onPageChange={handlePageChange}
               onPageSizeChange={handlePageSizeChange}
-              pageSizeOptions={[25, 50, 100, 200]}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
             />
           </div>
         )}

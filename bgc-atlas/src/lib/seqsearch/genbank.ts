@@ -47,14 +47,22 @@ export interface GenbankRecord {
   origin: string;
 }
 
+// How many records the file holds, by LOCUS lines. parseGenbank reads the first and stops at
+// its `//`, so a multi-record file would otherwise be searched as its first contig alone.
+export function countGenbankRecords(input: string): number {
+  return input.match(/^LOCUS\s/gm)?.length ?? 0;
+}
+
 export function looksLikeGenbank(input: string): boolean {
   return /^LOCUS\s+\S/m.test(input);
 }
 
 // Tracking feature boundaries keeps aSDomain and CDS_motif translations (CDS fragments) out.
-const FEATURE_START = /^ {5}(\S+)\s+(.+)$/;
-const QUALIFIER_START = /^ {21}\/(\w+)=?(.*)$/;
-const CONTINUATION = /^ {21}(.*)$/;
+// `[\s\S]` rather than `.`: a character `.` does not match made `$` unreachable, and the
+// patterns then backtracked quadratically on a long line.
+const FEATURE_START = /^ {5}(\S+)\s+([\s\S]+)$/;
+const QUALIFIER_START = /^ {21}\/(\w+)=?([\s\S]*)$/;
+const CONTINUATION = /^ {21}([\s\S]*)$/;
 
 interface RawFeature {
   type: string;
@@ -92,7 +100,9 @@ function joinQualifier(name: string, parts: string[]): string {
 export function parseGenbank(input: string): GenbankRecord | null {
   if (!looksLikeGenbank(input)) return null;
 
-  const lines = input.split(/\r?\n/);
+  // A lone \r ends a line too (old Mac line endings); left inside a line it hid the
+  // file's structure and fed the patterns above input they backtracked on.
+  const lines = input.split(/\r\n|\r|\n/);
 
   const locusLine = lines.find((line) => line.startsWith('LOCUS'));
   const locusMatch = locusLine?.match(/^LOCUS\s+(\S+)\s+(\d+)\s+bp/);
@@ -171,6 +181,18 @@ export function parseGenbank(input: string): GenbankRecord | null {
 
   let unnamed = 0;
   const cdsFeatures: GenbankCds[] = [];
+  // Each CDS is a query named by its tag, and DIAMOND reports by that name, so two
+  // CDS sharing one -- a repeated /gene is common when there is no /locus_tag --
+  // would be reported as one query. The user cannot rename these, so a repeat is
+  // given a suffix. Deterministic, so re-reading the stored record for the results
+  // page names every CDS the same way the submission did.
+  const usedTags = new Set<string>();
+  const uniqueTag = (tag: string) => {
+    let name = tag;
+    for (let n = 2; usedTags.has(name); n += 1) name = `${tag}_${n}`;
+    usedTags.add(name);
+    return name;
+  };
   for (const feature of features) {
     if (feature.type !== 'CDS') continue;
     const span = parseLocation(feature.location);
@@ -179,7 +201,9 @@ export function parseGenbank(input: string): GenbankRecord | null {
     const translation = qualifierValue(feature, 'translation')?.replace(/\s+/g, '');
     unnamed += 1;
     cdsFeatures.push({
-      locusTag: qualifierValue(feature, 'locus_tag') ?? qualifierValue(feature, 'gene') ?? `cds_${unnamed}`,
+      locusTag: uniqueTag(
+        qualifierValue(feature, 'locus_tag') ?? qualifierValue(feature, 'gene') ?? `cds_${unnamed}`,
+      ),
       start: span.start,
       end: span.end,
       strand: span.strand,

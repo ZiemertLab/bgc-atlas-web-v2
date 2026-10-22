@@ -428,8 +428,12 @@ function ContigTrack({
               locus.strand === '+'
                 ? `${x0},${y} ${x0 + w - tip},${y} ${x0 + w},${mid} ${x0 + w - tip},${y + TRACK_H} ${x0},${y + TRACK_H}`
                 : `${x0 + w},${y} ${x0 + tip},${y} ${x0},${mid} ${x0 + tip},${y + TRACK_H} ${x0 + w},${y + TRACK_H}`;
+            // The contig too: contigs share coordinates, and a span alone marked the
+            // same locus on every contig as selected.
             const isSelected =
-              selectedLocus?.start === locus.start && selectedLocus?.end === locus.end;
+              selectedLocus?.contig === locus.contig &&
+              selectedLocus?.start === locus.start &&
+              selectedLocus?.end === locus.end;
             return (
               <g
                 key={`${locus.strand}-${locus.start}-${locus.end}`}

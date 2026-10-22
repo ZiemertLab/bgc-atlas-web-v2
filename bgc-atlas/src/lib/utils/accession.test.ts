@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey } from './accession';
+import { bioprojectUrl, doiUrl, isBioProject, isDoi, pubmedUrl, showStudyKey, studyTitle } from './accession';
 
 describe('isBioProject', () => {
   it.each(['PRJNA365333', 'PRJEB58634', 'PRJDB1234', 'prjna365333'])('accepts %s', (v) => {
@@ -94,5 +94,34 @@ describe('showStudyKey', () => {
 
   it('survives a null title and an empty identifier list', () => {
     expect(at('Ziels_2018_bioreactor', [], null)).toBe(true);
+  });
+});
+
+describe('studyTitle', () => {
+  it('prefers the title, then study_name, then the key', () => {
+    expect(studyTitle({ title: 'Soil', study_name: 'n', study_key: 'k' })).toBe('Soil');
+    expect(studyTitle({ title: null, study_name: 'n', study_key: 'k' })).toBe('n');
+    expect(studyTitle({ title: '', study_name: null, study_key: 'k', accession: 'PRJ1' })).toBe('k');
+  });
+
+  it('falls back to the accession when every name is a placeholder', () => {
+    expect(
+      studyTitle({ title: 'N/A', study_name: 'N/A', study_key: 'N/A', accession: 'MGYS00006083', bioproject: 'PRJEB30781' }),
+    ).toBe('MGYS00006083');
+    expect(studyTitle({ title: 'n/a', study_name: ' ', study_key: 'NA', bioproject: 'PRJEB30781' })).toBe('PRJEB30781');
+  });
+
+  it('keeps the key when nothing better exists', () => {
+    expect(studyTitle({ title: 'N/A', study_name: null, study_key: 'N/A' })).toBe('N/A');
+  });
+
+  it('does not treat a name that merely contains N/A as a placeholder', () => {
+    expect(studyTitle({ title: 'N/A soils', study_key: 'k' })).toBe('N/A soils');
+  });
+});
+
+describe('showStudyKey placeholder', () => {
+  it('hides a placeholder key', () => {
+    expect(showStudyKey('N/A', { identifiers: ['MGYS00006083'], title: 'MGYS00006083' })).toBe(false);
   });
 });

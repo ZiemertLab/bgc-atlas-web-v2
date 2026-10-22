@@ -15,9 +15,13 @@ const capture = vi.fn(async (q: unknown) => {
   return [];
 });
 
+// /api/bgcs runs its fallback count and page queries in a transaction that sets a
+// shorter statement_timeout first (withFallbackTimeout); the SET is not captured.
+const transaction = async (fn: (tx: unknown) => Promise<unknown>) =>
+  fn({ $queryRaw: capture, $queryRawUnsafe: capture, $executeRawUnsafe: async () => 0 });
 vi.mock('@/lib/prisma', () => ({
-  default: { $queryRaw: capture, $queryRawUnsafe: capture },
-  prisma: { $queryRaw: capture, $queryRawUnsafe: capture },
+  default: { $queryRaw: capture, $queryRawUnsafe: capture, $transaction: transaction },
+  prisma: { $queryRaw: capture, $queryRawUnsafe: capture, $transaction: transaction },
 }));
 
 // getOrSetCache would return a cached payload instead of running the fetcher.
@@ -33,10 +37,11 @@ vi.mock('@/lib/cache', async (orig) => {
 });
 
 /**
- * The ORDER BY followed by LIMIT/OFFSET; inner aggregate ORDER BYs are not matched.
+ * The ORDER BY that picks the page: the last one followed by LIMIT/OFFSET (for
+ * /api/bgcs, the inner query's); inner aggregate ORDER BYs are not matched.
  */
 function finalOrderBy(text: string): string {
-  const m = text.match(/[\s\S]*\bORDER BY\b([\s\S]*?)\s+LIMIT\s+\$\d+\s+OFFSET\s+\$\d+\s*$/i);
+  const m = text.match(/[\s\S]*\bORDER BY\b([\s\S]*?)\s+LIMIT\s+\$\d+\s+OFFSET\s+\$\d+/i);
   if (!m) throw new Error(`no paged ORDER BY found in:\n${text.slice(-400)}`);
   return m[1].replace(/\s+/g, ' ').trim();
 }
@@ -50,7 +55,7 @@ async function orderByFor(entity: 'bgcs' | 'gcfs' | 'samples', qs: string): Prom
       : await import('./samples/route');
   const res = await mod.GET(new Request(`http://localhost/api/${entity}?${qs}`));
   expect(res.status, `GET /api/${entity}?${qs} did not answer 200`).toBe(200);
-  const paged = captured.filter((c) => /LIMIT\s+\$\d+\s+OFFSET\s+\$\d+\s*$/i.test(c.text));
+  const paged = captured.filter((c) => /LIMIT\s+\$\d+\s+OFFSET\s+\$\d+/i.test(c.text));
   expect(paged.length, `no paged query issued for /api/${entity}?${qs}`).toBeGreaterThan(0);
   return finalOrderBy(paged[paged.length - 1]!.text);
 }
@@ -112,6 +117,19 @@ describe('/api/bgcs ORDER BY', () => {
     },
   );
 
+  it.each([
+    ['class', 'b.product_category'],
+    ['type', 'b.product'],
+  ])('orders sortField=%s as the index orders an array: min asc, max desc, byte order, empties last', async (sortField, column) => {
+    // The browse index sorts a multi-valued keyword by its smallest value ascending
+    // and its largest descending; this fallback used the FIRST element, in the
+    // default collation, so the order changed whenever OpenSearch was down.
+    expect(await orderByFor('bgcs', `sortField=${sortField}&sortOrder=asc&limit=50`))
+      .toBe(`(SELECT min(v COLLATE "C") FROM unnest(${column}) v) ASC NULLS LAST, b.id ASC`);
+    expect(await orderByFor('bgcs', `sortField=${sortField}&sortOrder=desc&limit=50`))
+      .toBe(`(SELECT max(v COLLATE "C") FROM unnest(${column}) v) DESC NULLS LAST, b.id ASC`);
+  });
+
   it('does NOT tiebreak sortField=completeness (measured: index scan -> full sort, 13ms -> >20s)', async () => {
     // TIEBREAK_EXEMPT_BGC_SORTS in the route carries the numbers. DESC is the
     // default direction; the point is the absence of `, b.id ASC`.
@@ -152,6 +170,56 @@ describe('/api/bgcs ORDER BY', () => {
   it('does not double the key when the multi-field sort already ends on it', async () => {
     const order = await orderByFor('bgcs', 'sortFields=length,id&sortOrders=desc,asc&limit=50');
     expect(order).toBe('(b.end_pos - b.start_pos) DESC, b.id ASC');
+  });
+
+  // The table sends type/class; product/category and the pre-rename names are the
+  // same sorts, which this path did not know and so ordered by id.
+  it.each([['product', 'type'], ['productType', 'type'], ['category', 'class'], ['productCategory', 'class']])(
+    'reads sortField=%s as %s, the name the index also takes, rather than sorting by id',
+    async (alias, canonical) => {
+      expect(await orderByFor('bgcs', `sortField=${alias}&sortOrder=asc&limit=50`))
+        .toBe(await orderByFor('bgcs', `sortField=${canonical}&sortOrder=asc&limit=50`));
+    },
+  );
+
+  it('sorts a product key inside a multi-field sort by the same rule', async () => {
+    expect(await orderByFor('bgcs', 'sortFields=productType,length&sortOrders=asc,desc&limit=50'))
+      .toBe('(SELECT min(v COLLATE "C") FROM unnest(b.product) v) ASC NULLS LAST, (b.end_pos - b.start_pos) DESC, b.id ASC');
+  });
+
+  // The index sorts text in byte order with missing values last; the database
+  // collation is en_US, which put a different 50 rows first on the same box.
+  it.each([
+    ['name', 'asc', 'b.filename COLLATE "C" ASC, b.id ASC'],
+    ['name', 'desc', 'b.filename COLLATE "C" DESC, b.id ASC'],
+    ['biome', 'asc', 'COALESCE(bbs.resolved_biome_level_1, bbs.environment_biome, bbs.environment_feature, bbs.environment_material) COLLATE "C" ASC NULLS LAST, b.id ASC'],
+    ['biome', 'desc', 'COALESCE(bbs.resolved_biome_level_1, bbs.environment_biome, bbs.environment_feature, bbs.environment_material) COLLATE "C" DESC NULLS LAST, b.id ASC'],
+    ['taxonomy', 'desc', 'COALESCE(t.species, t.genus, t.family, t.order_name, t.class, t.phylum, t.domain) COLLATE "C" DESC NULLS LAST, b.id ASC'],
+  ])('sorts the text key sortField=%s %s in byte order, as the index does', async (sortField, sortOrder, expected) => {
+    // taxonomy is only sortable narrowed (applySortFieldGuard), so every case narrows.
+    expect(await orderByFor('bgcs', `sortField=${sortField}&sortOrder=${sortOrder}&gcf=GCF-000080&limit=50`)).toBe(expected);
+  });
+
+  it('uses the same text keys inside a multi-field sort', async () => {
+    expect(await orderByFor('bgcs', 'sortFields=name,length&sortOrders=asc,desc&limit=50'))
+      .toBe('b.filename COLLATE "C" ASC, (b.end_pos - b.start_pos) DESC, b.id ASC');
+  });
+
+  it('finds the page before it reads the decorating joins, and keeps its order', async () => {
+    // In one step PostgreSQL joined biome, samples and taxonomy for every match and
+    // then kept 50 -- 25 s to a timeout on a small map box. The inner step pages
+    // over bgcs with only the joins the filters and the sort need.
+    const inner = await orderByFor('bgcs', 'latMin=36&latMax=36.6&lonMin=120&lonMax=120.6&sortField=biome&sortOrder=asc&limit=50');
+    const text = captured.filter((c) => /LIMIT\s+\$\d+\s+OFFSET\s+\$\d+/i.test(c.text)).pop()!.text.replace(/\s+/g, ' ');
+    const step = text.slice(text.indexOf('FROM ( SELECT b.id FROM bgcs b'), text.indexOf(') page JOIN bgcs b ON b.id = page.id'));
+    expect(step.length).toBeGreaterThan(0);
+    // The sort's own join is in the inner step; the display-only ones are not.
+    expect(step).toContain('LEFT JOIN bgc_biome_summary_mv bbs');
+    for (const decoration of ['assembly_samples_mv', 'bgc_taxonomy', 'LATERAL', 'gcfs g']) {
+      expect(step).not.toContain(decoration);
+    }
+    // The outer step ends on the same ordering.
+    expect(text.trim().endsWith(`ORDER BY ${inner}`)).toBe(true);
   });
 });
 

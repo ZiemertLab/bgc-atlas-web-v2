@@ -1,15 +1,21 @@
 import { createReadStream } from 'fs';
-import { access, constants, readFile } from 'fs/promises';
+import { access, constants, readFile, realpath, stat } from 'fs/promises';
 import { Readable } from 'stream';
 import path from 'path';
 import { NextResponse } from 'next/server';
 
 import {
+  ANTISMASH_VIEWER_BUSY_MESSAGE,
+  antismashExtractionLineFull,
+  antismashExtractionWouldStart,
   ensureAntismashRunExtraction,
   getAntismashRun,
   getAntismashRunExtractionDir,
   touchAntismashRunExtraction,
 } from '@/lib/api/antismash';
+import { cancelBodyOnAbort, isHead } from '@/lib/http/abandoned-body';
+import { chargeViewerWork, viewerBusyResponse } from '@/lib/api/antismash-viewer-limit';
+import { antismashFailureMessage } from '@/lib/api/errors';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -265,7 +271,7 @@ const injectEnhancementScript = (html: string, scriptTag: string) => {
 };
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ runId?: string; segments?: string[] }> }
 ) {
   const { runId, segments } = await params;
@@ -286,15 +292,28 @@ export async function GET(
     );
   }
 
+  // Starting an unpack is charged to the caller and bounded box-wide; serving a
+  // run already on disk, or joining one being unpacked, is not.
+  if (await antismashExtractionWouldStart(runId)) {
+    if (antismashExtractionLineFull()) return viewerBusyResponse(ANTISMASH_VIEWER_BUSY_MESSAGE);
+    const limited = await chargeViewerWork(request);
+    if (limited) return limited;
+  }
+
   const extractionResult = await ensureAntismashRunExtraction(run);
 
+  if (extractionResult.busy) {
+    return viewerBusyResponse(extractionResult.message ?? ANTISMASH_VIEWER_BUSY_MESSAGE);
+  }
   if (extractionResult.status !== 'ready' || !extractionResult.extractedPath) {
     const statusCode = extractionResult.status === 'missing-file' ? 404 : 500;
     return NextResponse.json(
       {
         success: false,
         error: extractionResult.status === 'missing-file' ? 'Missing archive' : 'Extraction error',
-        message: extractionResult.message ?? 'The antiSMASH archive is not available yet.',
+        // Not the raw message: it names the archive's path on disk.
+        message: antismashFailureMessage(
+          extractionResult.status, extractionResult.message, `antiSMASH extraction of run ${runId}`),
       },
       { status: statusCode }
     );
@@ -320,8 +339,23 @@ export async function GET(
 
   const shouldInject = getMimeType(normalized).startsWith('text/html');
 
+  let size: number;
   try {
     await access(normalized, constants.R_OK);
+    // access() passes a directory too, and createReadStream on one fails with
+    // EISDIR after the response has started: the client got an empty reply and
+    // nginx a 502. A directory is not a file here.
+    const info = await stat(normalized);
+    if (!info.isFile()) throw new Error('not a file');
+    size = info.size;
+    // The check above is on the path's text. A symlink inside an unpacked run
+    // tarball (tar -xzf keeps them) would pass it and serve any file the app can
+    // read, .env included; the real path has to be inside the run directory too.
+    const [realFile, realBase] = await Promise.all([realpath(normalized), realpath(baseDirNormalized)]);
+    if (!realFile.startsWith(`${realBase}${path.sep}`)) {
+      console.warn(`antiSMASH files: ${normalized} resolves outside its run (${realFile}); refused`);
+      throw new Error('outside the run directory');
+    }
   } catch {
     return NextResponse.json(
       { success: false, error: 'Not found', message: 'Requested file was not found.' },
@@ -355,14 +389,20 @@ export async function GET(
     }
   }
 
+  const headers = {
+    'Content-Type': getMimeType(normalized),
+    'Cache-Control': 'no-store',
+  };
+
+  // HEAD: the file is not opened. Next drops a HEAD's body unread, and a read
+  // stream nobody consumes keeps its file descriptor open for good.
+  if (isHead(request)) {
+    return new NextResponse(null, { headers: { ...headers, 'Content-Length': String(size) } });
+  }
+
   const nodeStream = createReadStream(normalized);
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
-  const response = new NextResponse(webStream, {
-    headers: {
-      'Content-Type': getMimeType(normalized),
-      'Cache-Control': 'no-store',
-    },
-  });
-
-  return response;
+  // Closes the file if the client leaves before the body starts.
+  cancelBodyOnAbort(request, webStream);
+  return new NextResponse(webStream, { headers });
 }

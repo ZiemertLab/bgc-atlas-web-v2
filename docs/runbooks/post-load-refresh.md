@@ -46,6 +46,7 @@ SET max_parallel_workers_per_gather = 0;   -- stops work_mem being multiplied pe
 
 ```sql
 REFRESH MATERIALIZED VIEW CONCURRENTLY assembly_samples_mv;
+REFRESH MATERIALIZED VIEW CONCURRENTLY assembly_bgc_counts_mv;                -- the Assemblies view's # BGCs
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_product_category_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_gold_bucket_counts;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_product_facet_counts;
@@ -55,6 +56,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_length_stats_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_product_category_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_category_combination_mv;           -- one bgcs scan
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_product_type_matrix_mv;
+REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_product_type_member_mv;            -- one bgcs scan
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_route_counts_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_sample_map_mv;                     -- 5 GB, one of the slowest
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_summary_mv;                        -- the slowest
@@ -73,7 +75,10 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_biome_summary_mv;                  --
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_data_source_counts;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_gold_ecosystem_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_gold_ecosystem_distribution_mv;
+REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_member_ecosystem_mv;               -- one bgcs scan; reads assembly_samples_mv
 REFRESH MATERIALIZED VIEW CONCURRENTLY study_ecosystem_dist;
+REFRESH MATERIALIZED VIEW CONCURRENTLY study_geo_mv;                          -- reads sample_summary + sample_parent_key
+REFRESH MATERIALIZED VIEW CONCURRENTLY study_map_points_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY sample_source_type_counts;
 ```
 
@@ -87,7 +92,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_biome_level_4_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_environment_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_feature_distribution_mv;
 REFRESH MATERIALIZED VIEW CONCURRENTLY bgc_material_distribution_mv;
-REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_distributions_mv;
+REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_distributions_mv;                  -- reads both member views above
 REFRESH MATERIALIZED VIEW CONCURRENTLY gcf_environmental_distribution_mv;
 ```
 
@@ -95,6 +100,14 @@ Tier 1 is about two thirds of the run. Size does not predict cost here; joins
 do: `gcf_summary_mv` and `gcf_sample_map_mv` take longer than the 12 GB
 `bgc_biome_summary_mv`. After a real ingest, expect the run to be slower than on
 unchanged data.
+
+`gcf_distributions_mv` builds its ecosystem distributions, `max_pct_l*`,
+`dom_ecosystem_l*`, `resolved_pct_l*`, the `eco_l*_ge*` arrays and the
+product-type shares from `gcf_product_type_member_mv` (tier 1: `bgcs` +
+`bgc_gcf`) and `gcf_member_ecosystem_mv` (tier 2: each member's ecosystem is that
+of its assembly's first-ranked sample, so it reads `assembly_samples_mv`).
+Refresh either one late, or not at all, and `/gcfs` reports the previous shares
+with nothing to show it.
 
 Every matview has a unique index, so all of them refresh `CONCURRENTLY` and none
 blocks reads while rebuilding. Running the SQL by hand rather than through §0
@@ -179,6 +192,12 @@ load rather than a matview refresh. Their exact map queries are the `prt` and
 from `gcf_taxonomy_distribution_mv`: it counts non-primary members and invents
 `*__Unknown`, so it would disagree with the SQL fallback.
 
+The share columns of `gcf_distributions_mv` -- `product_type_member_share`,
+`product_types_ge*`, `eco_l<n>_ge*`, `resolved_pct_l*`, `dom_ecosystem_l*` and
+`max_pct_l*` -- go stale the same way: after refreshing `gcf_distributions_mv`,
+re-patch them as in "Share fields" below. A corpus rebuild selects them
+(`build_browse_corpus.py`), so it does not drop them.
+
 ### Products and their categories
 
 `gcf_product_type_matrix_mv` pairs each product with its category through
@@ -219,6 +238,143 @@ gcf_scalar_patch.py biome_terms.tsv "$OS" <live index> <new index> --list biome_
 `--list` matters: without it every family gets one string containing `\x1f`
 separators, which matches nothing an `equals` asks for. Check that
 `max_result_window` came across before the swap; the tool refuses if it did not.
+
+### Share fields
+
+The `/gcfs` product and ecosystem share filters read these `gcf_browse` fields,
+all from `gcf_distributions_mv`:
+
+| field | type | holds |
+|---|---|---|
+| `product_type_member_share` | object, not indexed | {antiSMASH product: % of primary members carrying it}; display only |
+| `product_types_ge10/50/90` | keyword list | products carried by at least 10/50/90% of members |
+| `eco_l<n>_ge10/50/90` | keyword list | level-n ecosystems with at least that share |
+| `eco_l<n>_any` | keyword list | every level-n ecosystem at least one member has |
+| `resolved_pct_l<n>` | float | % of members with a level-n ecosystem |
+| `dom_ecosystem_l*`, `max_pct_l*`, `biome_distribution_l*` | | the dominant ecosystem and the distributions |
+
+`build_browse_corpus.py` selects all of them, so a corpus rebuild needs nothing
+below. Patch an existing index after refreshing `gcf_distributions_mv`, or to
+add the fields to an index built without them. There are two maps:
+`gcf_share_fields_map.sql` (40 columns) and `gcf_share_fields_any_map.sql` (the
+five `eco_l<n>_any` lists). Patch the second onto the index the first produced,
+then verify and swap once.
+
+**Before you start.**
+- No other writer to `gcf_browse`: no other patch, corpus load or alias change.
+  A family written to the source after the scroll passes it is lost at the swap.
+- `gcf_scalar_patch.py` holds the whole map in memory, about 6 KB per listed
+  family for the 40-column map (~3.5 GB for 630k families); check `free -g`.
+- Run under `nice` and not alongside `next build`: the host also serves the site.
+- Run the block in `bash`, as `bgc_indexer` (`OPENSEARCH_URL`, `OPENSEARCH_USERNAME`,
+  `OPENSEARCH_PASSWORD`, `OPENSEARCH_CA_CERT` set; `scripts/opensearch/README.md`).
+  A failed gate runs `exit 1` and ends that shell, which is the point.
+
+```bash
+bash
+source scripts/opensearch/oscurl.sh
+OS=$OPENSEARCH_URL; DSN='<database URL>'; OUT='<scratch dir on shared storage>'
+T=scripts/populator/tools
+SRC=$(oscurl "$OS/_cat/aliases/gcf_browse?h=index" | tr -d '[:space:]')
+MID=gcf_browse_v$(date +%Y%m%d)share
+DST=gcf_browse_v$(date +%Y%m%d)shareany
+[ -n "$SRC" ] || { echo "no index behind gcf_browse: stop"; exit 1; }
+for i in "$MID" "$DST"; do
+  [ "$(oscurl -o /dev/null -w '%{http_code}' "$OS/$i")" = 404 ] || { echo "$i exists: stop"; exit 1; }
+done
+set -o pipefail
+
+# 1. export both maps (read-only; seq-scans gcfs and gcf_distributions_mv, no bgcs)
+psql "$DSN" -X -At -F$'\t' -v ON_ERROR_STOP=1 -f $T/gcf_share_fields_map.sql > "$OUT/share.tsv"
+psql "$DSN" -X -At -F$'\t' -v ON_ERROR_STOP=1 -f $T/gcf_share_fields_any_map.sql > "$OUT/share_any.tsv"
+awk -F'\t' 'NF != 40' "$OUT/share.tsv" | wc -l          # 0
+awk -F'\t' 'NF != 6' "$OUT/share_any.tsv" | wc -l       # 0
+tail -n +2 "$OUT/share.tsv" | wc -l                      # = listed families; same for share_any.tsv
+
+# 2. flags
+FLAGS="--json product_type_member_share --type product_type_member_share:object-disabled"
+for t in 10 50 90; do FLAGS="$FLAGS --list product_types_ge$t --type product_types_ge$t:keyword"; done
+for n in 1 2 3 4 5; do
+  for t in 10 50 90; do FLAGS="$FLAGS --list eco_l${n}_ge$t --type eco_l${n}_ge$t:keyword"; done
+  FLAGS="$FLAGS --type resolved_pct_l$n:float --json biome_distribution_l$n"
+done
+for n in 2 4 5; do FLAGS="$FLAGS --type dom_ecosystem_l$n:keyword"; done
+ANY=""
+for n in 1 2 3 4 5; do ANY="$ANY --list eco_l${n}_any --type eco_l${n}_any:keyword"; done
+
+# 3. dry run (creates nothing): check the properties it would add and overwrite,
+#    and that max_result_window is carried
+python3 $T/gcf_scalar_patch.py "$OUT/share.tsv" "$OS" "$SRC" "$MID" $FLAGS --dry-run
+
+# 4. patch twice; each writes only its destination, and the alias is untouched
+nice -n 10 python3 $T/gcf_scalar_patch.py "$OUT/share.tsv" "$OS" "$SRC" "$MID" $FLAGS \
+  2>&1 | tee "$OUT/share_patch.log" || { echo "patch failed: do not swap"; exit 1; }
+nice -n 10 python3 $T/gcf_scalar_patch.py "$OUT/share_any.tsv" "$OS" "$MID" "$DST" $ANY \
+  2>&1 | tee "$OUT/share_any_patch.log" || { echo "patch failed: do not swap"; exit 1; }
+```
+
+Each patch must end with "counts match, every family mapped". The "documents
+changed" total counts every family that gained a field; for the re-sent columns
+(`max_pct_l*`, `dom_ecosystem_l*`, `biome_distribution_l*`), read the per-field
+"changed on" column instead. A large number there means the index was older than
+the view. The tool refuses an existing destination; `--resume` is only for
+continuing a run you started.
+
+**Verify before the swap.** The index and the SQL fallback must give the same
+counts. Pick a product and a level-3 ecosystem that occur in the data:
+
+```bash
+P=RiPP-like; E=Marine
+q() { oscurl "$OS/$DST/_count" -H 'Content-Type: application/json' -d "{\"query\":$1}" | grep -o '"count":[0-9]*'; }
+oscurl "$OS/$DST/_count"                                     # = listed families
+oscurl "$OS/$DST/_settings" | grep -o '"max_result_window":"[0-9]*"'
+q "{\"term\":{\"product_types_ge50\":\"$P\"}}"
+q "{\"term\":{\"eco_l3_ge50\":\"$E\"}}"
+q "{\"term\":{\"eco_l3_any\":\"$E\"}}"
+q '{"exists":{"field":"resolved_pct_l1"}}'
+q '{"exists":{"field":"eco_l3_any"}}'
+```
+
+```sql
+-- the same numbers from the database (read-only, seconds)
+\set p 'RiPP-like'
+\set e 'Marine'
+SET statement_timeout = '60s';
+SELECT count(*)                                                        AS listed,
+       count(*) FILTER (WHERE :'p' = ANY(d.product_types_ge50))        AS product_ge50,
+       count(*) FILTER (WHERE :'e' = ANY(d.eco_l3_ge50))               AS eco_l3_ge50,
+       count(*) FILTER (WHERE d.biome_distribution_l3 ? :'e')          AS eco_l3_any,
+       count(*) FILTER (WHERE d.resolved_pct_l1 IS NOT NULL)           AS resolved_l1,
+       count(*) FILTER (WHERE d.biome_distribution_l3 <> '{}')         AS any_l3
+FROM gcfs g LEFT JOIN gcf_distributions_mv d ON d.gcf_id = g.id WHERE g.listed;
+```
+
+Also check one family's document against its `gcf_distributions_mv` row
+(`_search` with a `term` on `gcf_id`, `_source` limited to the share fields).
+
+**Swap**, one atomic call. The second patch prints a swap command with `$MID` as
+the source; `$MID` is not behind the alias, so use this one:
+
+```bash
+oscurl -XPOST "$OS/_aliases" -H 'Content-Type: application/json' \
+  -d "{\"actions\":[{\"remove\":{\"index\":\"$SRC\",\"alias\":\"gcf_browse\"}},{\"add\":{\"index\":\"$DST\",\"alias\":\"gcf_browse\"}}]}"
+oscurl "$OS/_cat/aliases/gcf_browse?v"                       # -> $DST
+```
+
+Cached `/api/gcfs` pages keep their old rows until their TTL expires. The
+`eco_l<n>_any` lists are picked up within a minute without a restart: until the
+alias points at an index that has all five, the app sends "any member" ecosystem
+conditions to the SQL fallback (`lib/opensearch/gcf-browse-fields.ts`, checked
+every 60 s).
+
+**Rollback**: the same call with `$SRC` and `$DST` exchanged. If `$SRC` lacks
+the share fields, every share filter on `/gcfs` then shows no families instead
+of an error: a `term` query on a missing field matches nothing. So roll back only
+to an index that has them, or roll the app back with it.
+
+**Cleanup**, once `$DST` has served without a rollback: delete `$MID` and `$SRC`
+(list the indexes first, then `oscurl -XDELETE "$OS/<literal name>"`), and the TSVs
+and logs in `$OUT`.
 
 ---
 

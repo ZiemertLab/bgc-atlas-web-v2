@@ -9,6 +9,7 @@ import {
   TooltipTrigger,
   TOOLTIP_WIDE_CLASS,
 } from "@/components/ui/tooltip";
+import { useTapToggleTooltip } from "@/components/ui/use-tap-toggle-tooltip";
 
 // Copy at or below this length keeps the narrow bubble. Calibrated on existing tooltips:
 // the longest short one is 140 chars, the shortest long one 190.
@@ -29,10 +30,23 @@ interface InfoTooltipProps {
 export function InfoTooltip({ content, children, wide: wideProp }: InfoTooltipProps) {
   const wide = wideProp ?? (typeof content === "string" && content.length > WIDE_TOOLTIP_MIN_CHARS);
   if (children !== undefined) return <TermTooltip content={content} wide={wide}>{children}</TermTooltip>;
+  return <IconTooltip content={content} wide={wide} />;
+}
 
+/**
+ * The icon variant of InfoTooltip: a "?" that opens on hover, focus or tap.
+ *
+ * Not portalled. The bubble is position:fixed (Radix popper), so it escapes the
+ * tables' horizontal-scroll containers without a portal. It is placed wrong under
+ * any ancestor that becomes the containing block for fixed elements (a transform,
+ * a filter, or `container-type`, which CardHeader sets): the bubble lands off
+ * screen. So never put it in a CardHeader.
+ */
+function IconTooltip({ content, wide }: { content: React.ReactNode; wide: boolean }) {
+  const { open, onOpenChange, triggerProps, contentProps } = useTapToggleTooltip();
   return (
-    <Tooltip delayDuration={300}>
-      <TooltipTrigger asChild>
+    <Tooltip open={open} onOpenChange={onOpenChange} delayDuration={300}>
+      <TooltipTrigger asChild {...triggerProps}>
         <button
           type="button"
           className="ml-1.5 inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring/40"
@@ -42,6 +56,7 @@ export function InfoTooltip({ content, children, wide: wideProp }: InfoTooltipPr
         </button>
       </TooltipTrigger>
       <TooltipContent
+        {...contentProps}
         className={wide ? TOOLTIP_WIDE_CLASS : 'max-w-[250px] text-center'}
       >
         {content}
@@ -51,36 +66,26 @@ export function InfoTooltip({ content, children, wide: wideProp }: InfoTooltipPr
 }
 
 /**
- * The phrase variant of InfoTooltip.
- *
- * Opens on hover and keyboard focus like any tooltip, and also on tap: a phone has
- * no hover, and Radix's trigger closes the tooltip on pointerdown and on click, so
- * a tap would otherwise open nothing. Those two handlers are pre-empted
- * (preventDefault makes Radix skip its own) and the tap toggles instead; a tap
- * elsewhere still closes it.
+ * The phrase variant of InfoTooltip. Opens on hover, focus and tap like the icon
+ * (see useTapToggleTooltip).
  *
  * Portalled, unlike the icon variant: the trigger sits inside running text, and
  * content rendered in place would put block elements inside a <p>.
  */
 function TermTooltip({ content, children, wide }: { content: React.ReactNode; children: React.ReactNode; wide: boolean }) {
-  const [open, setOpen] = React.useState(false);
+  const { open, onOpenChange, triggerProps, contentProps } = useTapToggleTooltip();
   return (
-    <Tooltip open={open} onOpenChange={setOpen} delayDuration={300}>
-      <TooltipTrigger asChild>
+    <Tooltip open={open} onOpenChange={onOpenChange} delayDuration={300}>
+      <TooltipTrigger asChild {...triggerProps}>
         <button
           type="button"
-          onPointerDown={(e) => e.preventDefault()}
-          onClick={(e) => {
-            e.preventDefault();
-            setOpen((o) => !o);
-          }}
           className="cursor-help rounded-sm font-bold underline decoration-dotted decoration-1 underline-offset-4 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring/40"
         >
           {children}
         </button>
       </TooltipTrigger>
       <TooltipPrimitive.Portal>
-        <TooltipContent collisionPadding={16} className={wide ? TOOLTIP_WIDE_CLASS : "max-w-[250px] text-center"}>
+        <TooltipContent {...contentProps} className={wide ? TOOLTIP_WIDE_CLASS : "max-w-[250px] text-center"}>
           {content}
         </TooltipContent>
       </TooltipPrimitive.Portal>

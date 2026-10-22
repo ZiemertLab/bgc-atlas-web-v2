@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { MainLayout } from '@/components/layout/main-layout';
@@ -46,6 +46,7 @@ import { TooltipBadge } from '@/components/ui/tooltip-badge';
 import { MibigAnchorChip, MibigAnchorsPanel } from './gcf-mibig-anchors';
 import { RetiredFamilyView } from '@/components/gcf/retired-family';
 import type { RetiredFamily } from '@/lib/gcf-legacy';
+import type { AreaLinks } from '@/components/ui/sample-map-dots.client';
 
 function retiredFrom(body: string | undefined): RetiredFamily | null {
   try {
@@ -60,6 +61,15 @@ export default function GcfDetailPage({ params }: { params: Promise<{ id: string
   const { id } = use(params);
   const { data: gcf, isLoading, error, hasLoaded } = useGcfDetail(id);
   const { data: mapData, isLoading: mapLoading, error: mapError } = useGcfMapSamples(id);
+  // The map's area select keeps the family: "View BGCs" lists this family's BGCs
+  // in the box. No "View samples" -- the sample pages cannot filter by family, so
+  // it listed every sample there.
+  const mapAreaLinks = useMemo<AreaLinks>(() => ({
+    bgcs: (box) => {
+      box.set('gcf', id);
+      return `/bgcs?${box}`;
+    },
+  }), [id]);
   // Fetched with the page, not on panel open: whether the section renders at all depends on the response.
   const {
     fields: envFields,
@@ -542,7 +552,7 @@ export default function GcfDetailPage({ params }: { params: Promise<{ id: string
           className="mb-6"
         >
           <div className="w-full">
-            <GoldEcosystemChart gcfId={id} width={700} height={450} />
+            <GoldEcosystemChart gcfId={id} width={700} height={450} memberCount={gcf.memberBgcCount} />
           </div>
         </CollapsibleSection>
 
@@ -573,7 +583,7 @@ export default function GcfDetailPage({ params }: { params: Promise<{ id: string
               Failed to load map
             </div>
           ) : (
-            <SampleMapDots samples={mapData?.data || []} height={520} />
+            <SampleMapDots samples={mapData?.data || []} height={520} areaLinks={mapAreaLinks} />
           )}
           {mapData && mapData.total > 5000 && (
             <div className="text-xs text-muted-foreground text-center mt-4">

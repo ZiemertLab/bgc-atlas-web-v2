@@ -15,6 +15,23 @@ export const CURRENT_CLUSTERING = {
   tag: 'v2b6',
   /** The data release the clustering first shipped in. */
   release: 'R2.0-beta.6',
+  /**
+   * Figures that change only when the clustering does, stated on /about and in /llms.txt. Kept here so a
+   * re-clustering updates them with the tag: the about page once said 1,335 MIBiG-anchored families while the
+   * database and the release notes said 1,328. Each is the count its comment names, on the live database.
+   */
+  figures: {
+    /** gcfs WHERE listed AND family_class = 'seed' */
+    listedSeedFamilies: 373_360,
+    /** gcfs WHERE listed AND family_class = 'fragmented' */
+    listedFragmentedFamilies: 256_512,
+    /** Share of BGCs in at least one family, published (deduplicated) basis, as in the release notes. */
+    clusteredPercent: 89.4,
+    /** BGCs with more than one bgc_gcf row. */
+    multiFamilyBgcs: 2_366_096,
+    /** Listed families with a gcf_mibig_anchor row. */
+    mibigAnchoredFamilies: 1_328,
+  },
 } as const;
 
 /**

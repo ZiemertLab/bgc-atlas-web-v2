@@ -5,8 +5,9 @@ import { join } from 'path';
 import { runBiGSlice, parseBiGSliceResults, checkBiGSliceAvailability, tierWorkspace } from '../bigslice';
 import { CLUSTERING_THRESHOLD, type BiGSliceTier } from '../bigslice/families';
 import { runDiamond, parseDiamondResults, checkDiamondAvailability } from '../diamond';
-import { SEARCH_DEFAULTS } from '../seqsearch/defaults';
+import { parseSearchParameters } from '../seqsearch/defaults';
 import { warmSequenceSampleMap } from '../seqsearch/sample-map';
+import type { SequenceHitFilters } from '../seqsearch/database';
 import {
   updateSessionStatus,
   storeSearchResults,
@@ -16,8 +17,10 @@ import {
   storeBigSliceResults,
 } from '../bigslice/database';
 import redisClient from '@/lib/redis-client';
-import { processGcfGbkExport, processPropertyGbkExport } from './gcf-export';
+import { processGcfGbkExport, processPropertyGbkExport, processSequenceGbkExport } from './gcf-export';
 import { initializeCronJobs } from '@/lib/cron';
+import { closeJobRecord, closeOrphanedJobRecords } from './job-records';
+import { SEARCH_NOT_QUEUED_MESSAGE } from '@/lib/api/errors';
 
 const redisConfig = {
   host: process.env.REDIS_HOST || 'localhost',
@@ -30,6 +33,21 @@ const redisConfig = {
   maxLoadingTimeout: 1,
 };
 
+/**
+ * QUEUE_TEST_PREFIX puts this server's queues and workers under their own Redis prefix
+ * (BullMQ's default is 'bull'), so a preview can run real searches end to end -- a
+ * restart mid-search included -- without production's workers taking its jobs or its
+ * worker taking production's. Such a server sees none of production's jobs, so it runs
+ * neither the orphan sweep (it would close production's open records as orphaned) nor
+ * the cron jobs. Unset everywhere but a test preview.
+ */
+const queueTestPrefix = (() => {
+  const prefix = process.env.QUEUE_TEST_PREFIX;
+  if (!prefix) return undefined;
+  if (prefix === 'bull') throw new Error("QUEUE_TEST_PREFIX must not be 'bull', production's prefix");
+  return prefix;
+})();
+const queuePrefix = queueTestPrefix ? { prefix: queueTestPrefix } : {};
 export interface SequenceSearchJob {
   type: 'sequence';
   sessionId: string;
@@ -75,9 +93,18 @@ export interface PropertyGbkExportJob {
   userEmail?: string;
 }
 
+export interface SequenceGbkExportJob {
+  type: 'sequence-gbk-export';
+  exportJobId: string;
+  sessionId: string;
+  /** The results table's filters when the export was started; the job resolves the BGCs. */
+  filters?: SequenceHitFilters;
+  userEmail?: string;
+}
+
 export type SearchJob = SequenceSearchJob | BGCSearchJob;
 
-export type ExportJob = GcfGbkExportJob | PropertyGbkExportJob;
+export type ExportJob = GcfGbkExportJob | PropertyGbkExportJob | SequenceGbkExportJob;
 
 export interface JobStatus {
   id: string | undefined;
@@ -103,6 +130,7 @@ export const searchQueue =
   globalForSearchQueue.searchQueue ??
   new Queue<SearchJob>('search-jobs', {
     connection: redisConfig,
+    ...queuePrefix,
     defaultJobOptions: {
       removeOnComplete: 10,
       removeOnFail: 20,
@@ -121,6 +149,7 @@ export const exportQueue =
   globalForSearchQueue.exportQueue ??
   new Queue<ExportJob>('export-jobs', {
     connection: redisConfig,
+    ...queuePrefix,
     defaultJobOptions: {
       attempts: 1,
       // ~7 days, matching zip retention, so Recent Jobs links resolve.
@@ -130,10 +159,18 @@ export const exportQueue =
   });
 globalForSearchQueue.exportQueue = exportQueue;
 
+/**
+ * SEARCH_WORKER_DISABLED=1 keeps a preview or worktree server off the shared queue.
+ * Checked here, not only at boot: addSearchJob and addExportJob also call
+ * initializeWorker, so a boot-only check let the first search submitted to a
+ * preview start a worker that took production jobs with the preview's code and env.
+ */
+export const searchWorkerDisabled = () => process.env.SEARCH_WORKER_DISABLED === '1';
 export function initializeWorker() {
+  if (searchWorkerDisabled()) return null;
   if (globalForSearchQueue.searchWorker) return globalForSearchQueue.searchWorker;
 
-  initializeCronJobs();
+  if (!queueTestPrefix) initializeCronJobs();
   
   const worker = new Worker<SearchJob>('search-jobs', async (job: Job<SearchJob>) => {
     const jobData = job.data;
@@ -158,6 +195,7 @@ export function initializeWorker() {
     }
   }, {
     connection: redisConfig,
+    ...queuePrefix,
     concurrency: 1,
   });
 
@@ -165,7 +203,7 @@ export function initializeWorker() {
     const id = job.data.sessionId;
     console.log(`Job ${job.id} completed: ${id}`);
     try {
-      await redisClient.incr('bgc:stats:completed')
+      await redisClient.incr(STATS.search.completed)
       console.log('Incremented bgc:stats:completed via redisClient')
     } catch (e) {
       console.error('Failed to increment completed counter via redisClient:', e)
@@ -174,9 +212,14 @@ export function initializeWorker() {
 
   worker.on('failed', async (job, err) => {
     console.error(`Job ${job?.id} failed:`, err?.message || err);
+    // 'failed' fires on every attempt. Only a job with no retry left is over: its
+    // record is closed once, not once per attempt.
+    if (!job || !(await isFinallyFailed(job))) return;
+    await closeJobRecord(job.data, err?.message || 'Unknown error').catch((e) =>
+      console.error(`Failed to close the record of job ${job.id}:`, e));
 
     try {
-      await redisClient.incr('bgc:stats:failed')
+      await redisClient.incr(STATS.search.failed)
       console.log('Incremented bgc:stats:failed via redisClient')
     } catch (e) {
       console.error('Failed to increment failed counter via redisClient:', e)
@@ -185,6 +228,7 @@ export function initializeWorker() {
 
   globalForSearchQueue.searchWorker = worker;
   initializeExportWorker();
+  if (!queueTestPrefix) scheduleOrphanSweep();
   return worker;
 }
 
@@ -198,18 +242,21 @@ function initializeExportWorker() {
       return await processGcfGbkExport(job as Job<GcfGbkExportJob>, jobData);
     } else if (jobData.type === 'property-gbk-export') {
       return await processPropertyGbkExport(job as Job<PropertyGbkExportJob>, jobData);
+    } else if (jobData.type === 'sequence-gbk-export') {
+      return await processSequenceGbkExport(job as Job<SequenceGbkExportJob>, jobData);
     }
     const exhaustiveCheck: never = jobData;
     throw new Error(`Unknown export job type: ${(exhaustiveCheck as { type: string }).type}`);
   }, {
     connection: redisConfig,
+    ...queuePrefix,
     concurrency: 1,
   });
 
   worker.on('completed', async (job) => {
     console.log(`Export job ${job.id} completed`);
     try {
-      await redisClient.incr('bgc:stats:completed');
+      await redisClient.incr(STATS.export.completed);
     } catch (e) {
       console.error('Failed to increment completed counter via redisClient:', e);
     }
@@ -217,8 +264,11 @@ function initializeExportWorker() {
 
   worker.on('failed', async (job, err) => {
     console.error(`Export job ${job?.id} failed:`, err?.message || err);
+    if (!job || !(await isFinallyFailed(job))) return;
+    await closeJobRecord(job.data, err?.message || 'Unknown error').catch((e) =>
+      console.error(`Failed to close the record of export job ${job.id}:`, e));
     try {
-      await redisClient.incr('bgc:stats:failed');
+      await redisClient.incr(STATS.export.failed);
     } catch (e) {
       console.error('Failed to increment failed counter via redisClient:', e);
     }
@@ -230,14 +280,17 @@ function initializeExportWorker() {
 
 // The marker is written only after DIAMOND exits successfully; the output is re-checked
 // because the session directory may have been cleaned up between attempts.
-async function readCompletedRun(
+export async function readCompletedRun(
   marker: string,
-): Promise<{ resultsFile: string; command: string } | null> {
+): Promise<{ resultsFile: string; command: string; diamondMs: number } | null> {
   try {
     const parsed = JSON.parse(await readFile(marker, 'utf8'));
     if (typeof parsed?.resultsFile !== 'string') return null;
     await stat(parsed.resultsFile);
-    return { resultsFile: parsed.resultsFile, command: String(parsed.command ?? '') };
+    // Markers written before diamondMs existed count as 0: the duration then covers
+    // only this attempt, as every resumed search's did.
+    const diamondMs = Number.isFinite(parsed.diamondMs) && parsed.diamondMs >= 0 ? parsed.diamondMs : 0;
+    return { resultsFile: parsed.resultsFile, command: String(parsed.command ?? ''), diamondMs };
   } catch {
     return null;
   }
@@ -270,10 +323,15 @@ async function processSequenceSearch(job: Job<SequenceSearchJob>, data: Sequence
 
     let resultsFile: string;
     let searchCommand: string;
+    // The DIAMOND run's own time, carried over from the attempt that ran it. Measuring
+    // from this attempt's start alone recorded a 30-minute search as the seconds a
+    // resumed attempt spent parsing and storing its output.
+    let earlierDiamondMs = 0;
 
     if (previousRun) {
       console.log(`Reusing the DIAMOND output of an earlier attempt for session: ${sessionId}`);
       ({ resultsFile, command: searchCommand } = previousRun);
+      earlierDiamondMs = previousRun.diamondMs;
       await updateSessionStatus(sessionId, 'running', { progress: 70 });
       await job.updateProgress(70);
     } else {
@@ -285,15 +343,29 @@ async function processSequenceSearch(job: Job<SequenceSearchJob>, data: Sequence
       console.log(`DIAMOND availability confirmed`);
       await updateSessionStatus(sessionId, 'running', { progress: 20 });
 
+      // Checked again here, not only at submit: the values become DIAMOND argv, and a job
+      // already in Redis (or enqueued by anything but the route) has not been through it.
+      // The route has already clamped 0 away, so re-applying the defaults changes nothing a
+      // session records.
+      const checked = parseSearchParameters({
+        eValue: parameters.eValue,
+        minIdentity: parameters.identity,
+        minCoverage: parameters.coverage,
+        maxResults: parameters.maxResults,
+      });
+      if (!checked.ok) {
+        throw new Error(`Invalid search parameters: ${checked.error}`);
+      }
+
       const searchResult = await runDiamond({
+        containerName: `atlas-diamond-${sessionId}`,
         queryFile: fastaFile,
         outputDirectory: sessionDir,
         sequenceType: actualSequenceType,
-        eValue: parseFloat(parameters.eValue || SEARCH_DEFAULTS.eValue),
-        // `??`, not `||`: these must match the thresholds stored on the session.
-        minIdentity: parameters.identity ?? SEARCH_DEFAULTS.identity,
-        minCoverage: parameters.coverage ?? SEARCH_DEFAULTS.coverage,
-        maxResults: parameters.maxResults ?? SEARCH_DEFAULTS.maxResults,
+        eValue: parseFloat(checked.value.eValue),
+        minIdentity: checked.value.identity,
+        minCoverage: checked.value.coverage,
+        maxResults: checked.value.maxResults,
         logFile,
       });
 
@@ -309,7 +381,12 @@ async function processSequenceSearch(job: Job<SequenceSearchJob>, data: Sequence
 
       await writeFile(
         doneMarker,
-        JSON.stringify({ resultsFile, command: searchCommand, completedAt: new Date().toISOString() }),
+        JSON.stringify({
+          resultsFile,
+          command: searchCommand,
+          diamondMs: Date.now() - startTime,
+          completedAt: new Date().toISOString(),
+        }),
       );
     }
 
@@ -324,7 +401,7 @@ async function processSequenceSearch(job: Job<SequenceSearchJob>, data: Sequence
 
     await job.updateProgress(90);
 
-    const searchDuration = Date.now() - startTime;
+    const searchDuration = earlierDiamondMs + (Date.now() - startTime);
 
     const resultsPath = join(sessionDir, 'sequence_results.json');
     const results = {
@@ -371,9 +448,9 @@ async function processSequenceSearch(job: Job<SequenceSearchJob>, data: Sequence
   } catch (error) {
     console.error(`Sequence search failed for session ${sessionId}:`, error);
 
-    await updateSessionStatus(sessionId, 'failed', {
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
+    // The session is NOT marked failed here: this attempt may be retried, and a
+    // 'failed' record stops the results page polling. The worker's 'failed' event
+    // closes it once no retry is left (lib/queue/job-records.ts).
 
     const resultsPath = join(sessionDir, 'sequence_results.json');
     const errorResults = {
@@ -429,12 +506,18 @@ async function processBGCSearch(job: Job<BGCSearchJob>, data: BGCSearchJob) {
 
     const startTime = Date.now();
     const logFile = join(sessionDir, 'bigslice.log');
+    // BiG-SLiCE refuses a report name it already holds, and this job may be a re-run: a
+    // restart mid-query leaves the first run's report behind, and BullMQ starts a stalled
+    // job again whatever its attempts. A name per run lets the re-run through; the
+    // container name stays per session, so the re-run also replaces the old container.
+    const reportName = `${sessionId}_${Date.now().toString(36)}`;
 
     // The seed model is the main atlas; everything is queried against it first.
     const runTier = async (tier: BiGSliceTier, inputDirectory: string) => {
       const result = await runBiGSlice({
         inputDirectory,
-        queryName: sessionId,
+        queryName: reportName,
+        containerName: `atlas-bigslice-${sessionId}-${tier}`,
         tier,
         logFile,
       });
@@ -443,7 +526,7 @@ async function processBGCSearch(job: Job<BGCSearchJob>, data: BGCSearchJob) {
       }
       const parsed = await parseBiGSliceResults(
         tierWorkspace(tier),
-        sessionId,
+        reportName,
         join(sessionDir, 'filename_map.json'),
         tier
       );
@@ -555,9 +638,7 @@ async function processBGCSearch(job: Job<BGCSearchJob>, data: BGCSearchJob) {
   } catch (error) {
     console.error(`BiG-SLiCE processing failed for session ${sessionId}:`, error);
 
-    await updateBigSliceSessionStatus(sessionId, 'failed', {
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
+    // Closed by the worker's 'failed' event, as for sequence searches.
 
     const resultsPath = join(sessionDir, 'bgc_results.json');
     const errorResults = {
@@ -581,15 +662,20 @@ export async function addSearchJob(jobData: SearchJob): Promise<Job<SearchJob>> 
   initializeWorker();
   
   const job = await searchQueue.add('search-job', jobData, {
+    // The session's own id, so the record can carry it before the job exists
+    // (enqueueRecordedSearch).
+    jobId: jobData.sessionId,
     priority: jobData.type === 'sequence' ? 1 : 2,
-    // A BiG-SLiCE retry with the same query_name fails with "report with this name exists".
+    // A failed query is not retried: they are heavy and usually fail deterministically. A
+    // stalled one (the app restarted mid-query) is re-run by BullMQ regardless, so
+    // processBGCSearch gives each run its own report name.
     ...(jobData.type === 'bgc' ? { attempts: 1 } : {}),
   });
   
   const queuedId = jobData.sessionId;
   console.log(`Added ${jobData.type} job to queue: ${job.id} (session: ${queuedId})`);
   try {
-    await redisClient.incr('bgc:stats:submitted')
+    await redisClient.incr(STATS.search.submitted)
     console.log('Incremented bgc:stats:submitted via redisClient')
   } catch (e) {
     console.error('Failed to increment submitted counter via redisClient:', e)
@@ -597,12 +683,31 @@ export async function addSearchJob(jobData: SearchJob): Promise<Job<SearchJob>> 
   return job;
 }
 
+/**
+ * Queue a search whose session record is already written, with job_id = sessionId.
+ *
+ * The submit routes queued first and wrote the record after. A failed write then left
+ * a job running for minutes on the remote host for a session that did not exist, to
+ * fail at the end on the results' foreign key, and the reader's attempt was spent.
+ * Record first: if queueing fails instead, the record is closed here, so the results
+ * page says so rather than waiting on a job that never existed.
+ */
+export async function enqueueRecordedSearch(jobData: SearchJob): Promise<Job<SearchJob>> {
+  try {
+    return await addSearchJob(jobData);
+  } catch (error) {
+    await closeJobRecord(jobData, SEARCH_NOT_QUEUED_MESSAGE).catch((e) =>
+      console.error(`Failed to close the record of unqueued search ${jobData.sessionId}:`, e));
+    throw error;
+  }
+}
+
 export async function addExportJob(jobData: ExportJob): Promise<Job<ExportJob>> {
   initializeWorker();
   const job = await exportQueue.add(jobData.type, jobData, { jobId: jobData.exportJobId });
   console.log(`Added ${jobData.type} job to export queue: ${job.id}`);
   try {
-    await redisClient.incr('bgc:stats:submitted');
+    await redisClient.incr(STATS.export.submitted);
   } catch (e) {
     console.error('Failed to increment submitted counter via redisClient:', e);
   }
@@ -673,51 +778,120 @@ async function getV1CompletedCount(): Promise<number> {
   }
 }
 
+/** Cumulative counters. Exports have their own: both workers once incremented the
+ *  search counters, so "Completed" on the search page counted GBK zips too. */
+const STATS = {
+  search: { submitted: 'bgc:stats:submitted', completed: 'bgc:stats:completed', failed: 'bgc:stats:failed' },
+  export: {
+    submitted: 'bgc:stats:exports:submitted',
+    completed: 'bgc:stats:exports:completed',
+    failed: 'bgc:stats:exports:failed',
+  },
+} as const;
+
+async function readCounters(keys: { submitted: string; completed: string; failed: string }) {
+  const [submitted, completed, failed] = await Promise.all(
+    [keys.submitted, keys.completed, keys.failed].map(async (k) => {
+      try {
+        return parseInt((await redisClient.get(k)) ?? '0', 10) || 0;
+      } catch (e) {
+        console.error(`Failed to read ${k}:`, e);
+        return 0;
+      }
+    }),
+  );
+  return { submitted, completed, failed };
+}
+
+/**
+ * The states of a job that is queued but not running. BullMQ 5 keeps a job added
+ * with a priority -- every search is (addSearchJob) -- in 'prioritized', not
+ * 'waiting', and a job between retry attempts in 'delayed'. Reading 'waiting'
+ * alone counted, listed and cancelled no queued search at all.
+ */
+export const QUEUED_STATES = ['waiting', 'prioritized', 'delayed'] as const;
+type QueuedState = (typeof QUEUED_STATES)[number];
+
+const sumQueued = (counts: Record<string, number>) =>
+  QUEUED_STATES.reduce((n, state) => n + (counts[state] || 0), 0);
+
+/** Both queues: searches and exports. */
 export async function getQueueStatus() {
-  const counts = await searchQueue.getJobCounts('waiting', 'active', 'completed', 'failed');
-
-  const waiting = await searchQueue.getJobs(['waiting'], 0, 9);
-  const active = await searchQueue.getJobs(['active'], 0, 9);
-  let cumulativeCompleted = counts.completed || 0;
-  let cumulativeFailed = counts.failed || 0;
-  let cumulativeSubmitted = 0;
-  try {
-    try {
-      const [cComp, cFail, cSub] = await Promise.all([
-        redisClient.get('bgc:stats:completed'),
-        redisClient.get('bgc:stats:failed'),
-        redisClient.get('bgc:stats:submitted'),
-      ])
-      cumulativeCompleted = cComp ? parseInt(cComp, 10) : cumulativeCompleted
-      cumulativeFailed = cFail ? parseInt(cFail, 10) : cumulativeFailed
-      cumulativeSubmitted = cSub ? parseInt(cSub, 10) : 0
-    } catch (e) {
-      console.error('Failed to read cumulative counters from redisClient:', e)
-    }
-  } catch (e) {
-    console.error('Failed to read cumulative counters from Redis:', e);
-  }
-
-  const v1Completed = await getV1CompletedCount();
+  const [searchCounts, exportCounts] = await Promise.all([
+    searchQueue.getJobCounts(...QUEUED_STATES, 'active'),
+    exportQueue.getJobCounts(...QUEUED_STATES, 'active'),
+  ]);
+  const searchWaiting = sumQueued(searchCounts);
+  const exportWaiting = sumQueued(exportCounts);
+  const describe = (j: Job<SearchJob | ExportJob>) => ({
+    id: j.id,
+    type: j.data.type,
+    sessionId: 'sessionId' in j.data ? j.data.sessionId : j.data.exportJobId,
+  });
+  const [waiting, active] = await Promise.all([
+    queuedJobs([...QUEUED_STATES], 0, 9),
+    queuedJobs(['active'], 0, 9),
+  ]);
+  const [search, exports, v1Completed] = await Promise.all([
+    readCounters(STATS.search),
+    readCounters(STATS.export),
+    getV1CompletedCount(),
+  ]);
 
   return {
-    waiting: counts.waiting || 0,
-    active: counts.active || 0,
-    completed: cumulativeCompleted + v1Completed,
-    failed: cumulativeFailed,
-    submitted: cumulativeSubmitted,
+    // In the queues now, searches and exports together.
+    waiting: searchWaiting + exportWaiting,
+    active: (searchCounts.active || 0) + (exportCounts.active || 0),
+    // Searches on this site, all time; v1's completed searches are reported separately.
+    ...search,
+    v1Completed,
+    searches: { waiting: searchWaiting, active: searchCounts.active || 0 },
+    exports: { ...exports, waiting: exportWaiting, active: exportCounts.active || 0 },
     jobs: {
-      waiting: waiting.map(j => ({
-        id: j.id,
-        type: j.data.type,
-        sessionId: j.data.sessionId,
-      })),
-      active: active.map(j => ({
-        id: j.id,
-        type: j.data.type,
-        sessionId: j.data.sessionId,
-        progress: j.progress,
-      })),
-    }
+      // getJobs applies the range to each state, so cap the merged list again.
+      waiting: waiting.slice(0, 10).map(describe),
+      active: active.map((j) => ({ ...describe(j), progress: j.progress })),
+    },
   };
+}
+
+const queuedJobs = async (
+  states: (QueuedState | 'active')[], start = 0, end = -1,
+): Promise<Job<SearchJob | ExportJob>[]> => [
+  ...(await searchQueue.getJobs(states, start, end)),
+  ...(await exportQueue.getJobs(states, start, end)),
+];
+
+/** True once a 'failed' job has no retry left: the event fires on every attempt. */
+async function isFinallyFailed(job: Job): Promise<boolean> {
+  try {
+    return (await job.getState()) === 'failed';
+  } catch {
+    return true;
+  }
+}
+
+const LIVE_STATES = ['waiting', 'active', 'delayed', 'prioritized', 'waiting-children', 'paused'] as const;
+
+/** Close records whose job is in no live queue state (lib/queue/job-records.ts). */
+export async function sweepOrphanedJobRecords() {
+  // getJobs throws rather than returning a partial list, so an empty set here
+  // really is "no live job"; nothing is closed if either read fails.
+  const [searchJobs, exportJobs] = await Promise.all([
+    searchQueue.getJobs([...LIVE_STATES]),
+    exportQueue.getJobs([...LIVE_STATES]),
+  ]);
+  const ids = (jobs: Job[]) => new Set(jobs.map((j) => String(j.id)));
+  const closed = await closeOrphanedJobRecords(ids(searchJobs), ids(exportJobs));
+  if (closed.sequence + closed.bgc + closed.export > 0) {
+    console.warn(`Closed orphaned job records: ${JSON.stringify(closed)}`);
+  }
+  return closed;
+}
+
+/** On boot (after a minute, once the worker has picked up stalled jobs) and hourly. */
+function scheduleOrphanSweep() {
+  const run = () => sweepOrphanedJobRecords().catch((e) => console.error('Orphan sweep failed:', e));
+  setTimeout(run, 60_000).unref?.();
+  setInterval(run, 3_600_000).unref?.();
 }

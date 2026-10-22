@@ -2,8 +2,10 @@
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
+import { DEFAULT_PAGE_SIZE_OPTIONS } from '@/lib/url-state';
 
 interface PaginationProps {
   currentPage: number;
@@ -13,7 +15,7 @@ interface PaginationProps {
   offset: number;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
-  pageSizeOptions?: number[];
+  pageSizeOptions?: readonly number[];
 }
 
 export function Pagination({
@@ -24,9 +26,11 @@ export function Pagination({
   offset,
   onPageChange,
   onPageSizeChange,
-  pageSizeOptions = [10, 25, 50, 100]
+  pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS
 }: PaginationProps) {
   const [jumpToPage, setJumpToPage] = useState('');
+  // Two Pagination instances per page (top and bottom): ids must be unique.
+  const pageSizeLabelId = useId();
 
   const handleJumpToPage = () => {
     const pageNum = parseInt(jumpToPage);
@@ -81,17 +85,35 @@ export function Pagination({
         </p>
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Show</span>
-          <select
-            value={pageSize}
-            onChange={(e) => onPageSizeChange(parseInt(e.target.value))}
-            className="h-7 rounded-sm border border-input bg-card px-1.5 text-xs"
+          <span id={`${pageSizeLabelId}-show`} className="text-xs text-muted-foreground">Show</span>
+          {/* Radix item values are strings. A pageSize outside the options
+              still gets an item, so the trigger never renders blank. */}
+          <Select
+            value={String(pageSize)}
+            onValueChange={(val) => onPageSizeChange(parseInt(val, 10))}
           >
-            {pageSizeOptions.map(size => (
-              <option key={size} value={size}>{size}</option>
-            ))}
-          </select>
-          <span className="text-xs text-muted-foreground">per page</span>
+            <SelectTrigger
+              size="sm"
+              // Named by the visible words around it ("Show … per page").
+              aria-labelledby={`${pageSizeLabelId}-show ${pageSizeLabelId}-per-page`}
+              // data-[size=sm]:h-7, not h-7: the trigger's size variant
+              // out-specifies a plain height class. 28px matches the row.
+              className="data-[size=sm]:h-7 w-auto min-w-16 gap-1 px-2 font-mono text-xs tabular-nums"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="min-w-[5rem]">
+              {(pageSizeOptions.includes(pageSize)
+                ? pageSizeOptions
+                : [...pageSizeOptions, pageSize].sort((a, b) => a - b)
+              ).map((size) => (
+                <SelectItem key={size} value={String(size)} className="font-mono text-xs tabular-nums">
+                  {size.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span id={`${pageSizeLabelId}-per-page`} className="text-xs text-muted-foreground">per page</span>
         </div>
       </div>
 

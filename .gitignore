@@ -32,8 +32,4 @@ bgc-atlas/src/lib/wordlists/petname/
 bgc-atlas/certs/
 os-certs/
 internal_users.yml
-/docker/
-/scripts/clustering-v2/
-/docs/releases/
-/new-schema/seed/bgc_redirect.csv.gz
 .idea/

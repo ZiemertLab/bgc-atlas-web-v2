@@ -1,8 +1,9 @@
 // CSV export of a whole session, one row per CDS alignment with BGC columns appended.
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllSessionHits, getSessionMetadata } from '@/lib/seqsearch/database';
+import { getAllSessionHits, getSessionMetadata, hitFiltersFromSearchParams } from '@/lib/seqsearch/database';
 import { hydrateBgcs } from '@/lib/seqsearch/hydrate';
 import { serverError } from '@/lib/api/errors';
+import { escapeDelimitedField } from '@/lib/utils/export';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HYDRATE_CHUNK = 1000;
@@ -14,11 +15,9 @@ const COLUMNS = [
   'query_start', 'query_end', 'query_length', 'target_start', 'target_end', 'target_length',
 ];
 
-function csvCell(value: string | number | null): string {
-  if (value === null || value === undefined) return '';
-  const text = String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
+// The shared escaper: quotes \r too, and neutralises spreadsheet formulas -- query ids
+// are the submitter's own text, and a results link is shared with others.
+const csvCell = (value: string | number | null): string => escapeDelimitedField(value, ',');
 
 export async function GET(
   request: NextRequest,
@@ -35,7 +34,11 @@ export async function GET(
       return NextResponse.json({ success: false, error: 'Session not found' }, { status: 404 });
     }
 
-    const hits = await getAllSessionHits(sessionId);
+    // The filters on screen (identity, coverage, the selected locus), as the GBK zip
+    // beside this button already applies: the CSV listed the whole session while the
+    // zip next to it packaged the filtered set.
+    const filters = hitFiltersFromSearchParams(request.nextUrl.searchParams);
+    const hits = await getAllSessionHits(sessionId, filters);
 
     // Chunked so the ::uuid[] parameter stays a sane size.
     const distinctBgcIds = [...new Set(hits.map(h => h.bgcId).filter((id): id is string => !!id))];

@@ -54,6 +54,7 @@ vi.mock('@/lib/prisma', () => ({ default: { $queryRaw: queryRaw } }));
 const { GET: statisticsGET } = await import('@/app/api/statistics/route');
 const { GET: samplesGET } = await import('@/app/api/statistics/samples/route');
 const { GET: hierarchyGET } = await import('@/app/api/statistics/samples/hierarchy/route');
+const { GET: gcfsGET } = await import('@/app/api/statistics/gcfs/route');
 const {
   STATS_CACHE_PATTERNS,
   STATS_WARM_PATHS,
@@ -285,12 +286,15 @@ describe('refresh-time invalidation still reaches these keys', () => {
     await call(statisticsGET, '/api/statistics?sourceType=isolate&sourceType=MAG&sourceType=SAG');
     await call(samplesGET, '/api/statistics/samples?groupBy=gold_level_2&limit=12');
     await call(hierarchyGET, '/api/statistics/samples/hierarchy?biome=soil');
+    // stats:gcfs:global:v3 -- the exact pattern 'stats:gcfs:global' never matched
+    // it, so a refresh left the family totals stale for up to 24h.
+    await call(gcfsGET, '/api/statistics/gcfs');
     const written = keys();
-    expect(written).toHaveLength(4);
+    expect(written).toHaveLength(5);
 
     const deleted = await bustAll();
 
-    expect(deleted).toBe(4);
+    expect(deleted).toBe(5);
     expect(keys(), `survived invalidation: ${keys().join(', ')}`).toEqual([]);
   });
 
@@ -300,9 +304,9 @@ describe('refresh-time invalidation still reaches these keys', () => {
       '/api/statistics': statisticsGET,
       '/api/statistics/samples': samplesGET,
       '/api/statistics/samples/hierarchy': hierarchyGET,
+      '/api/statistics/gcfs': gcfsGET,
     };
     const OUT_OF_SCOPE = [
-      '/api/statistics/gcfs',
       '/api/statistics/genomes/taxonomy-hierarchy',
       '/api/gcfs/stats',
     ];

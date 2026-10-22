@@ -6,7 +6,9 @@ import { QueryProvider } from "@/lib/providers/query-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { withBase } from "@/lib/basePath";
-import { SITE_DATASET_ID } from "@/lib/structured-data";
+import { SITE_CREATOR, SITE_DATASET_ID } from "@/lib/structured-data";
+import { JsonLd } from "@/components/seo/json-ld";
+import { SHARE_DESCRIPTION, SITE_NAME } from "@/components/seo/share-metadata";
 
 const plexSans = IBM_Plex_Sans({
   variable: "--font-plex-sans",
@@ -59,21 +61,19 @@ export const metadata: Metadata = {
     "biosynthesis",
     "microbial natural products",
   ],
+  // The fallback for routes that set no share tags of their own. No og:url: a
+  // route inheriting one would point its preview at the homepage. The home
+  // page's own text, with figures, is in (home)/layout.tsx.
   openGraph: {
     type: "website",
-    url: SITE_URL,
-    siteName: "BGC Atlas",
-    title:
-      "BGC Atlas — Biosynthetic Gene Clusters & Gene Cluster Families with Taxonomic and Environmental Context",
-    description:
-      "Explore more than 16 million biosynthetic gene clusters (BGCs), the gene cluster families (GCFs) they form, and the natural products and secondary metabolites they encode — across environmental metagenomes, MAGs, single-amplified genomes and isolate genomes.",
+    siteName: SITE_NAME,
+    title: SITE_NAME,
+    description: SHARE_DESCRIPTION,
   },
   twitter: {
     card: "summary_large_image",
-    title:
-      "BGC Atlas — Biosynthetic Gene Clusters & Gene Cluster Families",
-    description:
-      "More than 16 million biosynthetic gene clusters (BGCs) and the gene cluster families they form, from environmental metagenomes, MAGs, single-amplified genomes and isolate genomes, with taxonomy and environmental context.",
+    title: SITE_NAME,
+    description: SHARE_DESCRIPTION,
   },
   // Next does not apply basePath to metadata icon URLs.
   icons: {
@@ -89,9 +89,6 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: "#A51E37",
 };
-
-const GROUP_URL =
-  "https://uni-tuebingen.de/fakultaeten/mathematisch-naturwissenschaftliche-fakultaet/fachbereiche/interfakultaere-einrichtungen/imit/arbeitsgruppen/translational-genome-mining-for-natural-products/";
 
 const datasetJsonLd = {
   "@context": "https://schema.org",
@@ -125,11 +122,7 @@ const datasetJsonLd = {
   ],
   isAccessibleForFree: true,
   version: "2",
-  creator: {
-    "@type": "Organization",
-    name: "Translational Genome Mining for Natural Products, University of Tübingen",
-    url: GROUP_URL,
-  },
+  creator: SITE_CREATOR,
   publisher: {
     "@type": "Organization",
     name: "University of Tübingen",
@@ -181,14 +174,8 @@ const websiteJsonLd = {
   url: SITE_URL,
   description:
     "An atlas of more than 16 million biosynthetic gene clusters (BGCs) and the gene cluster families (GCFs) they form, from environmental metagenomes, metagenome-assembled genomes, single-amplified genomes and isolate genomes, encoding natural products and secondary metabolites.",
-  potentialAction: {
-    "@type": "SearchAction",
-    target: {
-      "@type": "EntryPoint",
-      urlTemplate: `${SITE_URL}/search?q={search_term_string}`,
-    },
-    "query-input": "required name=search_term_string",
-  },
+  // No SearchAction: it advertised /search?q=..., and nothing on the site reads `q`,
+  // so a search engine's sitelinks box landed on an empty search page.
 };
 
 const organizationJsonLd = {
@@ -216,18 +203,9 @@ export default function RootLayout({
         className="antialiased"
         suppressHydrationWarning
       >
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(datasetJsonLd) }}
-        />
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
-        />
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
-        />
+        <JsonLd data={datasetJsonLd} />
+        <JsonLd data={websiteJsonLd} />
+        <JsonLd data={organizationJsonLd} />
         <QueryProvider>
           <TooltipProvider>
             <Suspense fallback={null}>

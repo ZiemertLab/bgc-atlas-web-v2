@@ -8,6 +8,7 @@ import type {
 } from '@/lib/filters/types';
 import { hasFilterRules, isBlankFilterValue } from '@/lib/filters/types';
 import { UnhonourableQueryError } from '@/lib/filters/unhonourable-query';
+import { shareThresholdRefusal } from '@/lib/filters/share-fields';
 
 export type ConditionResolver = (condition: FilterCondition) => Prisma.Sql | null;
 
@@ -31,6 +32,10 @@ const classify = (
       reason: 'unsupported_operator', value: condition.value, supportedOperators,
     };
   }
+  // Same shape the index's builder reports (browse-advanced.ts), from the same
+  // helper, so a bad share threshold reads alike whichever backend refused it.
+  const threshold = shareThresholdRefusal(condition);
+  if (threshold) return threshold;
   return {
     field: condition.field, operator: condition.operator,
     reason: 'unusable_value', value: condition.value, supportedOperators,

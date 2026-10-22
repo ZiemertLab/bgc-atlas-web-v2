@@ -1,5 +1,6 @@
 'use client';
 
+import { isFilterRefusal } from '@/lib/api-client';
 import { useState } from 'react';
 import { InfoTooltip } from '@/components/ui/info-tooltip';
 import {
@@ -59,6 +60,10 @@ export function GcfTaxonomyComposition({ params, filtered = false }: Props) {
 
   // At the 0.7 resolution the table falls back to PostgreSQL, which the browse index cannot match.
   if (unsupported) return null;
+  // Nor for a refused filter: the list's results area already says which filter
+  // and how to remove it, so a "failed to load" card here would repeat it as an
+  // outage.
+  if (isFilterRefusal(error)) return null;
   if (!isLoading && !error && data && data.rows.length === 0) return null;
 
   if (isLoading || !data) {

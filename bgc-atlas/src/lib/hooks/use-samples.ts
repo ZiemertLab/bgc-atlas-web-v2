@@ -12,6 +12,8 @@ type HookResult<T> = {
   isFetching: boolean;
   error: Error | null;
   hasLoaded: boolean;
+  /** Re-run the query (the list's Retry). A no-op where nothing was fetched. */
+  refetch: () => void;
 };
 
 const createEmptyPaginatedResponse = <T>(params?: { limit?: number; offset?: number }): PaginatedResponse<T> => ({
@@ -100,6 +102,7 @@ function withFallback<T>(
     // Placeholder rows (keepPreviousData while a new key fetches) count as loaded;
     // otherwise the table swaps to a skeleton on every filter keystroke.
     hasLoaded: result.isFetched || result.isPlaceholderData,
+    refetch: () => { void result.refetch(); },
   };
 }
 
@@ -216,6 +219,7 @@ function useResource<T>(
       isFetching: false,
       error: null,
       hasLoaded: true,
+      refetch: () => {},
     };
   }
 

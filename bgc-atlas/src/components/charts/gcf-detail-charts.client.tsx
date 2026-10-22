@@ -224,23 +224,20 @@ export const ProductTypeChart = ({ data, width, height }: ProductTypeChartProps)
   );
 };
 
-interface GoldEcosystemData {
-  goldLevel1: string | null;
-  goldLevel2: string | null;
-  goldLevel3: string | null;
-  goldLevel4: string | null;
-  goldLevel5: string | null;
-  bgcCount: number;
-  percentage: number;
-}
-
 interface GoldEcosystemChartProps {
   gcfId: string;
   width: number;
   height: number;
+  /** The family's member count, so the caption can say how many members have
+   *  an ecosystem at all. */
+  memberCount?: number;
 }
 
-export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartProps) => {
+/** "63.1" -- a share for the caption, 1 dp. */
+const pct1 = (part: number, whole: number) =>
+  ((part / whole) * 100).toLocaleString(undefined, { maximumFractionDigits: 1 });
+
+export const GoldEcosystemChart = ({ gcfId, width, height, memberCount }: GoldEcosystemChartProps) => {
   // Fetched only when the section opens.
   const { data, isLoading, error, isFetching, refetch } = useGoldEcosystemDistribution(gcfId);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -258,6 +255,13 @@ export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartP
     })),
     [data],
   );
+  // Members with any GOLD path, and with one classified to the selected level:
+  // the denominators the caption names. Each member is one row's count.
+  const withPath = useMemo(() => data.reduce((sum, d) => sum + d.bgcCount, 0), [data]);
+  const withLevel = useMemo(() => {
+    const key = `goldLevel${selectedLevel}` as const;
+    return data.reduce((sum, d) => sum + (d[key] ? d.bgcCount : 0), 0);
+  }, [data, selectedLevel]);
 
   useEffect(() => {
     if (view !== 'bars' || !svgRef.current || !tooltipRef.current || !data.length) return;
@@ -266,25 +270,24 @@ export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartP
     const tooltip = d3.select<HTMLDivElement, unknown>(tooltipRef.current);
     svg.selectAll('*').remove();
 
-    const getLevelKey = (d: GoldEcosystemData): string => {
-      const levelMap: Record<number, keyof GoldEcosystemData> = {
-        1: 'goldLevel1',
-        2: 'goldLevel2',
-        3: 'goldLevel3',
-        4: 'goldLevel4',
-        5: 'goldLevel5',
-      };
-      return (d[levelMap[selectedLevel]] as string) || 'Unknown';
-    };
+    const levelKey = `goldLevel${selectedLevel}` as const;
 
-    const aggregated = Array.from(
+    // Aggregate over the members WITH an ecosystem at the selected level, the denominator the
+    // family list and gcf_distributions_mv use. Members whose path stops above the level are
+    // left out rather than drawn as an Unknown bar; the caption says how many have one.
+    const ranked = Array.from(
       d3.rollup(
-        data,
+        data.filter((d) => d[levelKey]),
         v => d3.sum(v, d => d.bgcCount),
-        d => getLevelKey(d)
+        d => d[levelKey] as string
       ),
       ([gold, count]) => ({ gold, count })
-    ).sort((a, b) => b.count - a.count).slice(0, 15);
+    ).sort((a, b) => b.count - a.count);
+    // Summed BEFORE the top-15 cut, so a bar's share is of every member with an
+    // ecosystem at this level, not of the 15 drawn.
+    const totalAtLevel = d3.sum(ranked, d => d.count);
+    const aggregated = ranked.slice(0, 15);
+    const shareOf = `of members with an L${selectedLevel} ecosystem`;
 
     const margin = { top: 20, right: 60, bottom: 60, left: 180 };
     const innerWidth = Math.max(0, width - margin.left - margin.right);
@@ -340,15 +343,15 @@ export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartP
       .style('cursor', 'pointer')
       .on('mouseenter', function (event, d) {
         d3.select(this).attr('opacity', 0.7);
-        const totalBgcs = d3.sum(aggregated, d => d.count);
-        const percentage = (d.count / totalBgcs * 100).toFixed(1);
+        const percentage = (d.count / totalAtLevel * 100)
+          .toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
         tooltip
           .style('opacity', 1)
           .style('left', `${event.clientX + 10}px`)
           .style('top', `${event.clientY - 10}px`)
           .html(`
             <strong>${d.gold}</strong><br/>
-            BGCs: ${d.count.toLocaleString()} (${percentage}%)
+            BGCs: ${d.count.toLocaleString()} (${percentage} % ${shareOf})
           `);
       })
       .on('mousemove', function (event) {
@@ -458,6 +461,32 @@ export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartP
         )}
         <ChartViewToggle view={view} onChange={setView} />
       </div>
+      {/* The denominator, where the percentages are read: the bars are shares
+          of the members with an ecosystem at the selected level, as on the
+          family list; the sunburst counts every member with a GOLD path. */}
+      {view === 'bars' && withLevel === 0 ? (
+        // Nothing to draw at this level: one line, not an empty SVG under a
+        // "0 of N" caption. The level selector above stays usable.
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No member has an L{selectedLevel} ecosystem.
+        </p>
+      ) : (
+      <>
+      <p className="text-xs text-muted-foreground">
+        <span className="font-mono tabular-nums">{(view === 'bars' ? withLevel : withPath).toLocaleString()}</span>
+        {memberCount != null && memberCount > 0 && (
+          <>
+            {' '}of <span className="font-mono tabular-nums">{memberCount.toLocaleString()}</span> members
+            {' '}(<span className="font-mono tabular-nums">
+              {pct1(view === 'bars' ? withLevel : withPath, memberCount)} %
+            </span>)
+          </>
+        )}
+        {memberCount != null && memberCount > 0 ? ' have' : ' members have'}
+        {view === 'bars'
+          ? <> an L{selectedLevel} ecosystem; percentages are of those members.</>
+          : ' a GOLD ecosystem.'}
+      </p>
       {view === 'sunburst' ? (
         <Sunburst
           rows={sunburstRows}
@@ -476,6 +505,8 @@ export const GoldEcosystemChart = ({ gcfId, width, height }: GoldEcosystemChartP
             style={{ opacity: 0 }}
           />
         </>
+      )}
+      </>
       )}
     </div>
   );

@@ -1,19 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { atlasGcfName, isMember, CLUSTERING_THRESHOLD } from './families';
 import { CURRENT_CLUSTERING } from '@/lib/clustering';
+import { atlasGcfName, isMember, CLUSTERING_THRESHOLD } from './families';
 
-const TAG = CURRENT_CLUSTERING.tag;
+// Names carry the current clustering's tag, so the test follows re-clusterings.
+const T = CURRENT_CLUSTERING.tag;
 
 describe('atlasGcfName', () => {
   it('pads seed ids to six digits, after the clustering tag', () => {
-    expect(atlasGcfName('seed', 42)).toBe(`GCF-${TAG}-000042`);
-    expect(atlasGcfName('seed', 238680)).toBe(`GCF-${TAG}-238680`);
+    expect(atlasGcfName('seed', 42)).toBe(`GCF-${T}-000042`);
+    expect(atlasGcfName('seed', 238680)).toBe(`GCF-${T}-238680`);
   });
 
   it('offsets fragmented ids by 400000', () => {
-    expect(atlasGcfName('fragmented', 42)).toBe(`GCF-${TAG}-F-400042`);
-    expect(atlasGcfName('fragmented', 311101)).toBe(`GCF-${TAG}-F-711101`);
+    expect(atlasGcfName('fragmented', 42)).toBe(`GCF-${T}-F-400042`);
+    expect(atlasGcfName('fragmented', 311101)).toBe(`GCF-${T}-F-711101`);
   });
 
   // The two models' id spaces overlap completely.
@@ -21,12 +22,13 @@ describe('atlasGcfName', () => {
     expect(atlasGcfName('seed', 1)).not.toBe(atlasGcfName('fragmented', 1));
   });
 
-  // The 2026-10-09 clustering: seed gcf.id 1-371,084 and fragmented 1-392,568 in the two data.db files.
-  it('covers the real id ranges of both models', () => {
-    expect(atlasGcfName('seed', 1)).toBe(`GCF-${TAG}-000001`);
-    expect(atlasGcfName('seed', 371084)).toBe(`GCF-${TAG}-371084`);
-    expect(atlasGcfName('fragmented', 1)).toBe(`GCF-${TAG}-F-400001`);
-    expect(atlasGcfName('fragmented', 392568)).toBe(`GCF-${TAG}-F-792568`);
+  // Six digits hold every id either model has produced (the 2026-10-09 clustering
+  // reached seed 371,084 and fragmented 392,568); 400000 + id stays six digits too.
+  it('keeps six digits across both models\' id ranges', () => {
+    expect(atlasGcfName('seed', 1)).toBe(`GCF-${T}-000001`);
+    expect(atlasGcfName('seed', 371084)).toBe(`GCF-${T}-371084`);
+    expect(atlasGcfName('fragmented', 1)).toBe(`GCF-${T}-F-400001`);
+    expect(atlasGcfName('fragmented', 392568)).toBe(`GCF-${T}-F-792568`);
   });
 });
 

@@ -220,8 +220,10 @@ export async function getBigSliceSessionMetadata(sessionId: string): Promise<BiG
     };
 
   } catch (error) {
-    console.error('Error retrieving BiG-SLiCE session metadata:', error);
-    return null;
+    // Not null: null means "no such session", which the results page takes as final
+    // and stops polling on. A DB error or a statement timeout is a 5xx the page
+    // retries, from the route's own catch.
+    throw error;
   }
 }
 
@@ -346,8 +348,11 @@ export async function getBigSliceSessionResults(
         : 'r.rank';
 
     const orderDirection = sortOrder === 'desc' ? 'DESC' : 'ASC';
-    // Keep each uploaded file's rows together, seed-model ranks first; the sort applies within a file.
-    const orderByClause = Prisma.sql`ORDER BY r.orig_filename ASC, (r.tier = 'seed') DESC, ${Prisma.raw(orderByField)} ${Prisma.raw(orderDirection)}`;
+    // The page groups by uploaded file, so keep each file's rows together and in the order
+    // they were produced: the seed model's ranks first, then any cascade to the fragmented
+    // model. The caller's sort applies WITHIN a file rather than shuffling the groups apart.
+    // r.id last: rows tied on the sort value come back in one fixed order.
+    const orderByClause = Prisma.sql`ORDER BY r.orig_filename ASC, (r.tier = 'seed') DESC, ${Prisma.raw(orderByField)} ${Prisma.raw(orderDirection)}, r.id ASC`;
 
     type ResultRow = {
       result_id: string;

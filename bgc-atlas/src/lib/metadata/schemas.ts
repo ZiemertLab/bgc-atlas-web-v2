@@ -9,27 +9,86 @@ const isValidISODate = (dateStr: string): boolean => {
   return !isNaN(date.getTime()) && date.toISOString().startsWith(dateStr);
 };
 
-const stringToNumber = z
-  .string()
-  .transform((val) => {
-    const trimmed = val.trim();
-    if (trimmed === '' || trimmed === 'NA' || trimmed === 'N/A' || trimmed === 'null') {
-      return undefined;
-    }
-    const num = parseFloat(trimmed);
-    return isNaN(num) ? undefined : num;
-  })
-  .optional();
+/** Cells that mean "not given". */
+const isMissing = (trimmed: string) =>
+  trimmed === '' || trimmed === 'NA' || trimmed === 'N/A' || trimmed === 'null';
+
+/** A plain decimal number: optional sign, digits, a dot, an exponent. Nothing else. */
+const PLAIN_NUMBER = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
+/**
+ * Read a number strictly: anything that is not a plain number is a validation error naming it,
+ * not a silent "not given" or a leading-digits guess. A decimal comma is refused ('1,200' could
+ * be a thousands separator). A coordinate's hemisphere letter ('12.5 S', 'W 45') sets the sign.
+ */
+function readNumber(hemisphere?: { positive: string; negative: string }) {
+  // unknown, not string: a form field arrives as a number, and z.union would hide the message.
+  return z
+    .unknown()
+    .transform((input, ctx) => {
+      if (input === undefined || input === null) return undefined;
+      if (typeof input === 'number') {
+        if (Number.isFinite(input)) return input;
+        ctx.addIssue({ code: 'custom', message: 'is not a number' });
+        return z.NEVER;
+      }
+      if (typeof input !== 'string') {
+        ctx.addIssue({ code: 'custom', message: 'is not a number' });
+        return z.NEVER;
+      }
+      const val = input;
+      let text = val.trim();
+      if (isMissing(text)) return undefined;
+      let sign = 1;
+      if (hemisphere) {
+        const letters = `${hemisphere.positive}${hemisphere.negative}`;
+        const m = new RegExp(`^(?:([${letters}])\\s*)?(.*?)\\s*°?\\s*(?:([${letters}]))?$`, 'i').exec(text);
+        const letter = (m?.[1] ?? m?.[3])?.toUpperCase();
+        if (m && letter && !(m[1] && m[3])) {
+          text = m[2].trim();
+          if (/^[+-]/.test(text)) {
+            ctx.addIssue({ code: 'custom', message: `'${val.trim()}' has both a sign and a hemisphere letter` });
+            return z.NEVER;
+          }
+          sign = letter === hemisphere.negative ? -1 : 1;
+        }
+      }
+      if (/^[+-]?\d*,\d+$/.test(text)) {
+        ctx.addIssue({ code: 'custom', message: `'${val.trim()}': use a dot as the decimal separator (6.5, not 6,5)` });
+        return z.NEVER;
+      }
+      if (!PLAIN_NUMBER.test(text)) {
+        ctx.addIssue({ code: 'custom', message: `'${val.trim()}' is not a number` });
+        return z.NEVER;
+      }
+      return sign * Number(text);
+    })
+    .optional();
+}
+
+const stringToNumber = readNumber();
+const latitudeString = readNumber({ positive: 'N', negative: 'S' });
+const longitudeString = readNumber({ positive: 'E', negative: 'W' });
+
+/** The column is a Postgres integer. */
+const MAX_INT32 = 2_147_483_647;
 
 const stringToInteger = z
-  .string()
-  .transform((val) => {
-    const trimmed = val.trim();
-    if (trimmed === '' || trimmed === 'NA' || trimmed === 'N/A' || trimmed === 'null') {
-      return undefined;
+  .unknown()
+  .transform((input, ctx) => {
+    if (input === undefined || input === null) return undefined;
+    if (typeof input === 'number') return input;
+    if (typeof input !== 'string') {
+      ctx.addIssue({ code: 'custom', message: 'is not a whole number' });
+      return z.NEVER;
     }
-    const num = parseInt(trimmed, 10);
-    return isNaN(num) ? undefined : num;
+    const trimmed = input.trim();
+    if (isMissing(trimmed)) return undefined;
+    if (!/^\d+$/.test(trimmed)) {
+      ctx.addIssue({ code: 'custom', message: `'${trimmed}' is not a whole number` });
+      return z.NEVER;
+    }
+    return Number(trimmed);
   })
   .optional();
 
@@ -84,7 +143,7 @@ export const SampleMetadataSchema = z
       .optional(),
     description: z.string().max(2000).optional(),
 
-    host_taxid: z.number().int().positive().optional(),
+    host_taxid: z.number().int().positive().max(MAX_INT32).optional(),
     host_scientific_name: z.string().max(255).optional(),
 
     external_id: z.string().max(255).optional(),
@@ -144,12 +203,12 @@ export const SampleMetadataSchema = z
     }
   );
 
-export const CsvRowSchema = z
+const CsvRowObject = z
   .object({
     sample_alias: z.string().min(1, 'Sample alias is required').max(255),
 
-    latitude: z.union([z.number(), stringToNumber]).optional(),
-    longitude: z.union([z.number(), stringToNumber]).optional(),
+    latitude: latitudeString,
+    longitude: longitudeString,
     geographic_location: optionalString,
     location_resolution: optionalString,
     geolocation_name: optionalString,
@@ -159,23 +218,23 @@ export const CsvRowSchema = z
     environment_material: optionalString,
     environmental_package: optionalString,
 
-    depth_min_meters: z.union([z.number(), stringToNumber]).optional(),
-    depth_max_meters: z.union([z.number(), stringToNumber]).optional(),
-    elevation_meters: z.union([z.number(), stringToNumber]).optional(),
+    depth_min_meters: stringToNumber,
+    depth_max_meters: stringToNumber,
+    elevation_meters: stringToNumber,
 
-    temperature: z.union([z.number(), stringToNumber]).optional(),
-    ph: z.union([z.number(), stringToNumber]).optional(),
-    salinity: z.union([z.number(), stringToNumber]).optional(),
+    temperature: stringToNumber,
+    ph: stringToNumber,
+    salinity: stringToNumber,
     salinity_unit: optionalString,
-    current_precipitation_mm: z.union([z.number(), stringToNumber]).optional(),
-    mean_annual_precipitation_mm: z.union([z.number(), stringToNumber]).optional(),
-    mean_annual_temperature: z.union([z.number(), stringToNumber]).optional(),
+    current_precipitation_mm: stringToNumber,
+    mean_annual_precipitation_mm: stringToNumber,
+    mean_annual_temperature: stringToNumber,
 
     collection_date: optionalString,
     collection_date_end: optionalString,
     description: optionalString,
 
-    host_taxid: z.union([z.number(), stringToInteger]).optional(),
+    host_taxid: stringToInteger,
     host_scientific_name: optionalString,
 
     external_id: optionalString,
@@ -192,7 +251,12 @@ export const CsvRowSchema = z
         return trimmed.split(',').map((f) => f.trim()).filter(Boolean);
       })
       .optional(),
-  })
+  });
+
+/** The columns the schema reads; anything else in a row is additional metadata. */
+export const CSV_ROW_FIELDS: ReadonlySet<string> = new Set(Object.keys(CsvRowObject.shape));
+
+export const CsvRowSchema = CsvRowObject
   .transform((data) => {
     return {
       sample_alias: data.sample_alias,

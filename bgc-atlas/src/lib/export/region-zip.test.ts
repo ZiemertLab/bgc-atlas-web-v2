@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -107,5 +107,43 @@ describe('zipEntryName', () => {
   it('adds .gbk once', () => {
     expect(zipEntryName('x.region001')).toBe('x.region001.gbk');
     expect(zipEntryName('x.region001.gbk')).toBe('x.region001.gbk');
+  });
+});
+
+describe('createRegionZip writes through a partial file', () => {
+  it('leaves only the finished zip at the output path', async () => {
+    const out = path.join(dir, 'whole.zip');
+    await createRegionZip([region('001')], out);
+
+    expect(existsSync(out)).toBe(true);
+    expect(existsSync(`${out}.partial`)).toBe(false);
+    expect(listZip(out)).toEqual(['GB_TEST.1_CM1.1.region001.gbk']);
+  });
+
+  it('leaves neither the zip nor the partial file when the export fails', async () => {
+    const out = path.join(dir, 'failed.zip');
+    await expect(createRegionZip([region('001')], out, async () => {
+      throw new Error('progress write failed');
+    })).rejects.toThrow('progress write failed');
+
+    expect(existsSync(out)).toBe(false);
+    expect(existsSync(`${out}.partial`)).toBe(false);
+  });
+
+  it('does not touch a zip already at the output path until the new one is complete', async () => {
+    const out = path.join(dir, 'existing.zip');
+    writeFileSync(out, 'the earlier export');
+    await expect(createRegionZip([region('001')], out, async () => {
+      throw new Error('progress write failed');
+    })).rejects.toThrow('progress write failed');
+
+    expect(readFileSync(out, 'utf8')).toBe('the earlier export');
+    expect(existsSync(`${out}.partial`)).toBe(false);
+  });
+
+  it('fails, without a partial file, when the zip cannot be written', async () => {
+    const out = path.join(dir, 'no-such-dir', 'x.zip');
+    await expect(createRegionZip([region('001'), region('002')], out)).rejects.toThrow(/ENOENT/);
+    expect(existsSync(`${out}.partial`)).toBe(false);
   });
 });

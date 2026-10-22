@@ -328,8 +328,16 @@ export interface TaxonomySummary {
   uniqueSpecies: number;
 }
 
+/** One lineage of a family: domain, phylum, class, order, family, genus, species, member BGCs. */
+export type TaxonomyLineage = [
+  string | null, string | null, string | null, string | null, string | null, string | null, string | null, number,
+];
+
 export interface TaxonomyDistributionResponse {
+  /** The family's most common lineages (top 20), each with every rank's value. */
   distribution: TaxonomyDistributionData[];
+  /** Every lineage of the family. Absent from payloads cached before it was added. */
+  lineages?: TaxonomyLineage[];
   summary: TaxonomySummary;
 }
 

@@ -34,6 +34,16 @@ export const GOLD_BUCKET_LABEL: Record<GoldBucket, string> = {
   unknown: "Unknown",
 };
 
+/**
+ * A ?goldBucket= value as the page names it: its label, or the value as it
+ * arrived when it is not a bucket (the server refuses those; the client shows
+ * them rather than validating). Own-key lookup, so "toString" is not a label.
+ */
+export const goldBucketLabel = (raw: string): string =>
+  Object.prototype.hasOwnProperty.call(GOLD_BUCKET_LABEL, raw)
+    ? GOLD_BUCKET_LABEL[raw as GoldBucket]
+    : raw;
+
 export const GOLD_BUCKET_COLOR: Record<GoldBucket, string> = {
   "host-animal": "#CC79A7",
   "host-plant": "#2E7D32",

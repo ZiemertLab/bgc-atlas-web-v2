@@ -8,6 +8,7 @@ import {
   parseCategoryFilter,
 } from '@/lib/gcf/category-share';
 import { parseFamilyClass } from '@/lib/gcf/family-class';
+import { BGC_SEARCH_CONTAINS_FIELDS, BGC_SEARCH_ID_FIELDS, parseBgcSearch, type BgcSearch } from '@/lib/bgc/search-text';
 
 export type BrowseEntity = 'bgcs' | 'gcfs' | 'samples';
 export type OpenSearchQuery = Record<string, unknown>;
@@ -17,13 +18,17 @@ type Sort = Record<string, { order: 'asc' | 'desc'; missing?: '_last' }>;
 const LIMIT_DEFAULT = 50;
 const LIMIT_MAX = 200;
 
+// An absent or blank parameter is the fallback: Number(null) and Number('') are 0,
+// which a missing ?limit= turned into a one-row page while the reply said 50.
 const asNumber = (value: string | null, fallback: number): number => {
+  if (value === null || value.trim() === '') return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+// Whole numbers only: a fractional size or from is a 400 from OpenSearch.
 const bounded = (value: string | null, fallback: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, asNumber(value, fallback)));
+  Math.max(min, Math.min(max, Math.trunc(asNumber(value, fallback))));
 
 const wildcard = (field: string, value: string): OpenSearchQuery => ({
   wildcard: { [field]: { value: `*${value}*`, case_insensitive: true } },
@@ -173,9 +178,9 @@ export function supportsBrowseSearch(entity: BrowseEntity, params: URLSearchPara
     // `biome` sorts on resolved_biome_level_1 alone: documents lacking it carry none of
     // SQL's COALESCE fallbacks, so the order is the same. `taxonomy` sorts on the
     // precomputed taxonomy_sort; deep taxonomy pages are still refused (~180,000 values).
-    const banned = ['productType', 'productCategory'];
-    return advancedFiltersServable(entity, params)
-      && !requestedSortFields(params).some((f) => banned.includes(f));
+    // `productType` / `productCategory` sort here too: the SQL fallback orders products by
+    // the index's rule (smallest value ascending, largest descending, byte order).
+    return advancedFiltersServable(entity, params);
   }
   // ?study= must never reach the SQL fallback, which has no study filter.
   if (params.has('study')) return true;
@@ -219,6 +224,12 @@ const bgcSort: Record<string, string> = {
   // Distance; lower = better.
   distance: 'distance', assembly: 'assembly_id',
   product: 'product_type', category: 'product_category',
+  // What /bgcs actually sends for its Product and Category columns (their column
+  // ids). Missing here, both fell through to bgc_id: the column showed a sort arrow
+  // over rows in id order. Arrays: the index orders them by their smallest value
+  // ascending and largest descending, and the SQL fallback ('type'/'class' in
+  // api/bgcs) orders the same way, so the two paths agree.
+  type: 'product_type', class: 'product_category',
   // pre-rename sort keys, still sent by older clients and saved views
   productType: 'product_type', productCategory: 'product_category',
   completeness: 'is_complete', name: 'filename',
@@ -233,6 +244,7 @@ function buildSampleFilters(params: URLSearchParams): OpenSearchQuery[] {
   if (search) filters.push(anyWildcard([
     'external_id', 'name', 'geographic_location', 'geolocation_name', 'environment_biome',
     'environment_feature', 'environment_material', 'host_scientific_name', 'primary_biome',
+    'study_titles',
   ], search));
   const id = params.get('id')?.trim();
   if (id) filters.push(anyWildcard(['external_id', 'sample_id'], id));
@@ -272,15 +284,24 @@ function buildSampleFilters(params: URLSearchParams): OpenSearchQuery[] {
   return filters;
 }
 
+/** ?search= on /bgcs: see lib/bgc/search-text.ts for why identifiers are not "contains". */
+function bgcSearchClause(search: BgcSearch): OpenSearchQuery {
+  const should: OpenSearchQuery[] = search.kind === 'uuid'
+    ? [
+        { term: { bgc_id: { value: search.uuid, case_insensitive: true } } },
+        { term: { assembly_id: { value: search.uuid, case_insensitive: true } } },
+      ]
+    : [
+        ...BGC_SEARCH_ID_FIELDS.map((field) => ({ prefix: { [field]: { value: search.text, case_insensitive: true } } })),
+        ...BGC_SEARCH_CONTAINS_FIELDS.map((field) => wildcard(field, search.text)),
+      ];
+  return { bool: { should, minimum_should_match: 1 } };
+}
+
 function buildBgcFilters(params: URLSearchParams): OpenSearchQuery[] {
   const filters: OpenSearchQuery[] = [];
-  const search = params.get('search')?.trim();
-  if (search) filters.push(anyWildcard([
-    'bgc_id', 'filename', 'assembly_id', 'contig', 'resolved_biome_level_1',
-    'resolved_biome_level_2', 'resolved_biome_level_3', 'resolved_biome_level_4',
-    'environment_biome', 'environment_feature', 'environment_material', 'product_type',
-    'product_category', 'sample_labels',
-  ], search));
+  const search = parseBgcSearch(params.get('search') ?? '');
+  if (search) filters.push(bgcSearchClause(search));
   addText(filters, 'bgc_id', params.get('id'));
   addText(filters, 'filename', params.get('name'));
   addText(filters, 'assembly_id', params.get('assembly'));
@@ -291,7 +312,8 @@ function buildBgcFilters(params: URLSearchParams): OpenSearchQuery[] {
   const bucket = params.get('goldBucket')?.trim();
   if (bucket) {
     const bucketQuery = goldBucketQuery(bucket);
-    // An unknown bucket matches nothing; SQL drops the filter instead (a deliberate difference).
+    // The /api/bgcs routes refuse an unknown bucket before routing here
+    // (bgcFilterRefusal), so the match-nothing branch is a guard, not a behaviour.
     filters.push(bucketQuery ?? { bool: { must_not: [{ match_all: {} }] } });
   }
   const category = firstParam(params, 'category', 'class');
@@ -328,6 +350,11 @@ function buildBgcFilters(params: URLSearchParams): OpenSearchQuery[] {
   // Inclusive bounds, each parsed on its own as the route's parseNumber does.
   addSqlStyleRange(filters, 'latitude', params.get('latMin'), params.get('latMax'));
   addSqlStyleRange(filters, 'longitude', params.get('lonMin'), params.get('lonMax'));
+  // ?sourceType= (repeatable): the BGC's assembly source type, as on /samples. The
+  // homepage map's "View BGCs" sends metagenome, so the list counts what the map's
+  // readout counts -- the map shows only metagenome samples.
+  const sourceTypes = params.getAll('sourceType').map((v) => v.trim()).filter(Boolean);
+  if (sourceTypes.length) filters.push({ terms: { assembly_source_type: sourceTypes } });
   return filters;
 }
 

@@ -3,7 +3,7 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { BGC_EXPORT_COLUMNS, type ExportableBgc } from './bgc-columns';
-import { GCF_TABLE_EXPORT_COLUMNS, formatShares } from './gcf-columns';
+import { GCF_TABLE_EXPORT_COLUMNS, formatShares, gcfTableExportColumns } from './gcf-columns';
 import { GENOME_EXPORT_COLUMNS, METAGENOME_EXPORT_COLUMNS } from './sample-columns';
 import { STUDY_EXPORT_COLUMNS } from './study-columns';
 import type { ExportColumn } from './format';
@@ -127,6 +127,51 @@ describe('family cells', () => {
     expect(cell('biomeDistribution_l1')).toBe('Environmental 60.0%; Host-associated 40.0%');
   });
 
+  it('names the ecosystem denominator and exports how many members have one', () => {
+    const row = {
+      ...gcf,
+      productTypeMemberShare: { 'RiPP-like': 99.96, hserlactone: 0.03, 'lanthipeptide-class-iv': 0.01 },
+      ecosystemResolvedPctByLevel: { 1: 99.5, 2: 80, 3: 63.11, 4: null, 5: 0 },
+    } as unknown as GcfListItem;
+    const col = (id: string) => GCF_TABLE_EXPORT_COLUMNS.find((c) => c.id === id)!;
+    expect(col('biomeDistribution_l3').label).toBe('GOLD Ecosystem (L3, % of members with an L3 ecosystem)');
+    expect(col('ecosystemResolved_l3').value(row)).toBe('63.11');
+    expect(col('ecosystemResolved_l4').value(row)).toBe('');
+    expect(col('ecosystemResolved_l5').value(row)).toBe('0');
+    // Every product at stored precision: the one member in 12,278 is the point.
+    expect(col('productTypeMemberShare').value(row))
+      .toBe('RiPP-like 99.96%; hserlactone 0.03%; lanthipeptide-class-iv 0.01%');
+    // A row from an index without the shares exports blanks, not zeros.
+    expect(col('productTypeMemberShare').value(gcf)).toBe('');
+    expect(col('ecosystemResolved_l3').value(gcf)).toBe('');
+  });
+
+  it('adds a Matched column per share filter after Member BGCs, in file style', () => {
+    const row = {
+      ...gcf,
+      productTypeMemberShare: { 'RiPP-like': 99.96, 'lanthipeptide-class-iv': 0.01 },
+      productTypesAtLeast: { 10: ['RiPP-like'], 50: ['RiPP-like'], 90: ['RiPP-like'] },
+      biomeDistributionByLevel: { 3: { Marine: 34.6 } },
+      ecosystemsAtLeastByLevel: { 3: { 10: ['Marine'], 50: [], 90: [] } },
+      ecosystemResolvedPctByLevel: { 3: 63.11 },
+    } as unknown as GcfListItem;
+    const columns = gcfTableExportColumns({
+      id: 'g', operator: 'AND', groups: [],
+      conditions: [
+        { id: 'a', field: 'productShare', operator: 'equals', value: 'lanthipeptide-class-iv', threshold: 0 },
+        { id: 'b', field: 'ecoShareL3', operator: 'equals', value: 'Marine', threshold: 10 },
+        { id: 'c', field: 'memberBgcCount', operator: 'gte', value: 50 },
+      ],
+    });
+    const at = columns.findIndex((c) => c.id === 'memberCount');
+    expect(columns[at + 1].label).toBe('Matched: lanthipeptide-class-iv (any member)');
+    expect(columns[at + 1].value(row)).toBe('lanthipeptide-class-iv: 0.01% of members');
+    expect(columns[at + 2].label).toBe('Matched: Marine (L3) ≥ 10 %');
+    expect(columns[at + 2].value(row)).toBe('Marine: 34.6% of members with an L3 ecosystem');
+    expect(columns).toHaveLength(GCF_TABLE_EXPORT_COLUMNS.length + 2);
+    expect(gcfTableExportColumns(null)).toBe(GCF_TABLE_EXPORT_COLUMNS);
+  });
+
   it('formatShares drops entries that round to nothing', () => {
     expect(formatShares({ a: 99.96, b: 0.04 })).toBe('a 100.0%');
   });
@@ -137,5 +182,18 @@ describe('study cells', () => {
     const study = { product_category_dist: { NRPS: 10, PKS: 12, RiPP: 0 } } as unknown as Study;
     const cell = STUDY_EXPORT_COLUMNS.find((c) => c.id === 'category_assignments')!.value(study);
     expect(cell).toBe('PKS 12; NRPS 10');
+  });
+});
+
+describe('BGC Category export', () => {
+  const category = (bgc: Partial<ExportableBgc>) =>
+    BGC_EXPORT_COLUMNS.find((c) => c.id === 'class')!.value(bgc as ExportableBgc);
+
+  it('lists a hybrid region\'s categories, as its cell shows them, not "Hybrid"', () => {
+    expect(category({ category: 'Hybrid', categories: ['NRPS', 'PKS'] })).toBe('NRPS, PKS');
+  });
+  it('keeps a single category as it is', () => {
+    expect(category({ category: 'RiPP', categories: ['RiPP'] })).toBe('RiPP');
+    expect(category({ category: 'terpene', categories: [] })).toBe('terpene');
   });
 });

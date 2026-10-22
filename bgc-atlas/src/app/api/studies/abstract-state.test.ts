@@ -54,6 +54,20 @@ const OPEN = {
   abstract_withheld: false,
 };
 
+/** Text we hold under a text-and-data-mining grant, which permits mining but not
+ *  redistribution. None is in the database today; this is what an ingest that skipped
+ *  migration 0083's deletion would leave, and the page alone used to be what hid it. */
+const UNLICENSED = {
+  id: '11111111-1111-5111-8111-111111111111',
+  study_key: 'Example_2020_tdm',
+  abstract: 'Publisher text we may mine but may not republish, long enough to render...',
+  abstract_source: 'crossref',
+  abstract_doi: '10.1016/j.example.2020.01.001',
+  abstract_license: 'https://www.elsevier.com/tdm/userlicense/1.0/',
+  abstract_publisher: 'Elsevier BV',
+  abstract_withheld: false,
+};
+
 /** A study nobody ever published a paper for: the genuine third state. */
 const NONE = {
   id: '00000000-0000-5000-8000-000000000000',
@@ -206,6 +220,20 @@ describe('GET /api/studies/{id}', () => {
     const { study } = await getDetail(NONE.id);
     expect(study.abstract_state).toBe('absent');
     expect(study.abstract_url).toBeNull();
+  });
+
+  it('never serves text the licence gate refuses, and reports it as withheld', async () => {
+    for (const query of ['', '?brief=1']) {
+      store.clear();
+      mockDetail(UNLICENSED);
+      const { study } = await getDetail(UNLICENSED.id, query);
+      expect(study.abstract).toBeNull();
+      expect(JSON.stringify(study)).not.toContain(UNLICENSED.abstract);
+      expect(study.abstract_state).toBe('withheld');
+      // So the page renders the link-out rather than nothing.
+      expect(study.abstract_withheld).toBe(true);
+      expect(study.abstract_url).toBe('https://doi.org/10.1016/j.example.2020.01.001');
+    }
   });
 
   it('carries the state on ?brief=1, which is what the /studies row expander reads', async () => {

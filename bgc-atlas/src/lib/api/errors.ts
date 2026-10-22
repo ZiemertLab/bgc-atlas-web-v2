@@ -43,9 +43,19 @@ export function serverError(
 }
 
 // Stored job failures written for the reader; any other `error_message` is raw and replaced.
+/** Written by lib/queue/job-records.ts when a job ends outside its processor. */
+export const JOB_CANCELED_MESSAGE = 'Job canceled by administrator';
+export const SEARCH_INTERRUPTED_MESSAGE =
+  'Search was interrupted when the server restarted and could not be recovered. Please submit it again.';
+export const SEARCH_NOT_QUEUED_MESSAGE =
+  'This search could not be queued. Please submit it again.';
+export const EXPORT_INTERRUPTED_MESSAGE =
+  'Export was interrupted when the server restarted and could not be recovered. Please start it again.';
 const READER_JOB_ERRORS = new Set([
-  'Job canceled by administrator',
-  'Search was interrupted when the server restarted and could not be recovered. Please submit it again.',
+  JOB_CANCELED_MESSAGE,
+  SEARCH_INTERRUPTED_MESSAGE,
+  SEARCH_NOT_QUEUED_MESSAGE,
+  EXPORT_INTERRUPTED_MESSAGE,
 ]);
 
 /**

@@ -4,7 +4,7 @@ import {
 } from './gcf-gold-distribution';
 
 describe('buildGcfGoldDistributionRequest', () => {
-  it('filters to the family, drops missing and empty paths, and takes the top 50', () => {
+  it('filters to the family, drops missing and empty paths, and takes every path (not a top 50)', () => {
     const body = buildGcfGoldDistributionRequest('cc897cac-2221-53f0-9e44-1e5b7cda93ff') as {
       size: number;
       query: { bool: { filter: unknown[]; must_not: unknown[] } };
@@ -14,7 +14,8 @@ describe('buildGcfGoldDistributionRequest', () => {
     expect(body.query.bool.filter).toContainEqual({ term: { gcf_id: 'cc897cac-2221-53f0-9e44-1e5b7cda93ff' } });
     expect(body.query.bool.filter).toContainEqual({ exists: { field: 'gold_ecosystem_path' } });
     expect(body.query.bool.must_not).toContainEqual({ term: { gold_ecosystem_path: '' } });
-    expect(body.aggs.paths.terms).toEqual({ field: 'gold_ecosystem_path', size: 50 });
+    // The corpus has 877 distinct paths; a top 50 made every level's shares a share of 50.
+    expect(body.aggs.paths.terms).toEqual({ field: 'gold_ecosystem_path', size: 1000 });
   });
 });
 

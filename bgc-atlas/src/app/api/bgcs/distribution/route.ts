@@ -4,7 +4,7 @@ import { buildBrowseFilters, supportsBrowseSearch } from '@/lib/opensearch/brows
 import {
   buildDistributionRequest, isDistributionVariant, parseDistributionResponse,
 } from '@/lib/opensearch/bgc-distribution';
-import { filterRefusalResponse } from '@/lib/api/filter-refusal';
+import { bgcFilterRefusal, filterRefusalResponse } from '@/lib/api/filter-refusal';
 import { serverError } from '@/lib/api/errors';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +22,11 @@ export async function GET(req: NextRequest) {
 
   // An unsupported filter set returns `supported: false` and the caller falls
   // back to the labelled corpus-wide snapshot; never return unfiltered bars as filtered.
+  // Before either gate, a sourceType, goldBucket or completeness value /api/bgcs
+  // refuses gets the same 400 here, so the charts never describe a different set
+  // than the table.
+  const badFilter = bgcFilterRefusal(params);
+  if (badFilter) return badFilter;
   if (!isBrowseSearchEnabled('bgcs')) {
     return NextResponse.json({ supported: false, reason: 'browse-index-disabled' });
   }

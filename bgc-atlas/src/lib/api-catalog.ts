@@ -1,3 +1,6 @@
+import { bgcPropertyFilterFields } from '@/lib/filters/bgc-property-fields';
+import { GOLD_BUCKET_ORDER } from '@/lib/utils/gold-buckets';
+
 // The public read API, described once: /openapi.json and /llms-full.txt both render from this.
 // Deliberately a subset; contribute, job-polling and export-download routes are internal.
 
@@ -147,7 +150,7 @@ const LIST_PARAMS: ApiParam[] = [
   { name: 'limit', in: 'query', type: 'integer', description: 'Page size. Default 50, maximum 200.' },
   { name: 'offset', in: 'query', type: 'integer', description: 'Rows to skip. Default 0.' },
   { name: 'sortField', in: 'query', type: 'string', description: 'Column to sort by.' },
-  { name: 'sortOrder', in: 'query', type: 'string', description: "'asc' or 'desc'. Default 'asc'." },
+  { name: 'sortOrder', in: 'query', type: 'string', description: "'asc' or 'desc'. Default 'desc', except /api/gcfs, which defaults to 'asc'." },
   {
     name: 'advancedFilters',
     in: 'query',
@@ -156,6 +159,28 @@ const LIST_PARAMS: ApiParam[] = [
       'Serialized filter group for compound AND/OR conditions. Produced by the UI query builder; the flat parameters above cover most needs.',
   },
 ];
+
+/**
+ * /api/gcfs's advancedFilters: the shared one, plus the family share fields
+ * (lib/filters/share-fields.ts). Kept in LIST_PARAMS's position.
+ */
+const GCFS_ADVANCED_FILTERS: ApiParam = {
+  name: 'advancedFilters',
+  in: 'query',
+  type: 'string',
+  description:
+    'Serialized filter group (base64 JSON, as the /gcfs URL carries it) for compound AND/OR conditions. '
+    + 'Two kinds of family field (productShare; ecoShareL1–L5) filter by share of members. `productShare`: an antiSMASH product type as antiSMASH names it '
+    + '(e.g. lanthipeptide-class-i), matched on its share of the family\'s primary members. `ecoShareL1` to `ecoShareL5`: '
+    + 'a GOLD ecosystem at that level, matched on its share of the members WITH an ecosystem at that level (not of all '
+    + 'members; ecosystemResolvedPctByLevel says how many have one). Operators equals, not_equals, in, not_in; `in` '
+    + 'matches when any one value reaches the threshold on its own. Each condition takes `threshold`, percent of '
+    + 'members: 0 (any member), 10, 50 or 90; omitted means 50. A negated condition matches only families the share '
+    + 'is defined for (with a product; with a member classified at that level). The retired `productClass` field is '
+    + 'rewritten on read into productShare at threshold 0, so old links return what they did. Any other threshold '
+    + 'is a 400 with reason `unsupported_threshold` and the offered `supportedThresholds`; `not_indexed` means the '
+    + 'browse index cannot serve ecosystem "any member" for a ?study= request yet (transient).',
+};
 
 const ID_PARAM = (what: string): ApiParam => ({
   name: 'id',
@@ -170,9 +195,11 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     path: '/api/gcfs',
     method: 'GET',
     summary: 'List gene cluster families',
-    description: '614,215 families. Every filter is optional and they combine with AND.',
+    description:
+      '{families} families. Every filter is optional and they combine with AND. A filter value the server cannot honour is a 400 with `code: "filter_refused"` and `rejected` naming it, with its reason.',
     params: [
-      ...LIST_PARAMS,
+      ...LIST_PARAMS.filter((p) => p.name !== 'advancedFilters'),
+      GCFS_ADVANCED_FILTERS,
       { name: 'search', in: 'query', type: 'string', description: 'Free text over family name and description.' },
       { name: 'id', in: 'query', type: 'string', description: 'Exact family UUID.' },
       { name: 'name', in: 'query', type: 'string', description: 'Family name, e.g. GCF-v2b6-000001.' },
@@ -180,12 +207,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
       { name: 'maxBgcs', in: 'query', type: 'integer', description: 'Maximum member BGC count.' },
       { name: 'category', in: 'query', type: 'string', description: 'antiSMASH product category, e.g. terpene, NRPS. (Was productType, still accepted.)' },
       { name: 'biome', in: 'query', type: 'string', description: 'Biome the family occurs in.' },
-      { name: 'ecosystemLevel', in: 'query', type: 'integer', description: 'GOLD ecosystem depth for the biome breakdown, 1-5. Default 1.' },
-      { name: 'mibigAnchored', in: 'query', type: 'boolean', description: 'Only families named by a characterized MIBiG compound.' },
+      { name: 'ecosystemLevel', in: 'query', type: 'integer', description: 'With sortField=dominantBiome, the GOLD ecosystem level (1-5) whose dominant share orders the families. Default 1. It does not change the response: every family carries all five levels.' },
+      { name: 'mibigAnchored', in: 'query', type: 'boolean', description: 'Only families with a characterized MIBiG reference cluster among their members.' },
       { name: 'familyClass', in: 'query', type: 'string', description: 'seed or fragmented: families clustered from complete or median-length BGCs, or from what that seed could not place. Any other value is a 400.' },
     ],
     returns:
-      'A page of families. Each carries name, petName, memberBgcCount, product and taxonomy distributions, length statistics, and mibigAnchored/mibigCompounds where the family is anchored.',
+      'A page of families. Each carries name, petName, memberBgcCount, product and taxonomy distributions, length statistics, and mibigAnchored/mibigCompounds where the family is anchored. taxonomyDistributionByRank holds each rank\'s top 20 taxa; taxonomyTaxaCountByRank gives the full count per rank. A family\'s complete lineage breakdown is at /api/gcfs/{id}/taxonomy-distribution. Member shares (absent, not zero, where the index lacks them): productTypeMemberShare {type: % of primary members carrying it, 2 dp; overlapping}; productTypesAtLeast {10|50|90: types at or above that share}; per GOLD level 1-5, ecosystemsAtLeastByLevel (the same, as % of members with an ecosystem at that level), ecosystemResolvedPctByLevel (% of members that have one) and dominantEcosystemByLevel {ecosystem, pct of members with one, 1 dp}. biomeDistributionByLevel is also of the members with an ecosystem at that level. Test thresholds against the AtLeast lists, not the rounded pct.',
     example: '/api/gcfs?minBgcs=100&category=terpene&limit=10',
   },
   {
@@ -220,7 +247,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     method: 'GET',
     summary: 'List biosynthetic gene clusters',
     description:
-      '15,985,022 clusters. Narrow before paging: unfiltered deep offsets are slow. Filtering by sample or assembly is much faster than free text.',
+      '{bgcs} clusters. Narrow before paging: unfiltered deep offsets are slow. Filtering by sample or assembly is much faster than free text. A filter value the server cannot honour is a 400 with `code: "filter_refused"` and `rejected` naming it; an offset too deep to serve is a 400 with `code: "deep_page"`.',
     params: [
       ...LIST_PARAMS,
       { name: 'search', in: 'query', type: 'string', description: 'Free text over cluster and assembly names.' },
@@ -230,7 +257,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
       { name: 'assembly', in: 'query', type: 'string', description: 'Assembly the cluster sits on.' },
       { name: 'category', in: 'query', type: 'string', description: 'antiSMASH product category: NRPS, PKS, RiPP, terpene, saccharide, other, or Hybrid for a region carrying several. (Was class, still accepted.)' },
       { name: 'product', in: 'query', type: 'string', description: 'Substring of an antiSMASH product, e.g. lassopeptide, T1PKS. Matches the product only, not the category. (Was typeText, still accepted.)' },
-      { name: 'completeness', in: 'query', type: 'string', description: 'Whether the cluster runs off the end of its contig.' },
+      { name: 'completeness', in: 'query', type: 'string', description: 'complete or partial: whether the cluster runs off the end of its contig. Any other value is a 400.' },
       { name: 'taxonomy', in: 'query', type: 'string', description: 'GTDB lineage match.' },
       { name: 'biome', in: 'query', type: 'string', description: 'Biome of the source sample.' },
       { name: 'goldEcosystem', in: 'query', type: 'string', description: 'GOLD ecosystem path.' },
@@ -243,6 +270,20 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
       { name: 'lonMin', in: 'query', type: 'number', description: 'Bounding box, minimum longitude.' },
       { name: 'lonMax', in: 'query', type: 'number', description: 'Bounding box, maximum longitude.' },
       { name: 'dataSource', in: 'query', type: 'string', description: 'Originating data source.' },
+      {
+        name: 'sourceType',
+        in: 'query',
+        type: 'array',
+        items: 'string',
+        description:
+          'Source type of the assembly the cluster sits on: metagenome, isolate, MAG or SAG. Repeat the key to pass several — ?sourceType=isolate&sourceType=MAG. Any other value, a comma-joined list included, is a 400 naming the four valid values.',
+      },
+      {
+        name: 'goldBucket',
+        in: 'query',
+        type: 'string',
+        description: `Coarse GOLD ecosystem bucket of the source sample: ${GOLD_BUCKET_ORDER.join(', ')}. Any other value is a 400 naming the valid ones.`,
+      },
     ],
     returns:
       'A page of clusters with products, length, gene count, completeness, family membership, source sample and assembly, GTDB lineage and biome.',
@@ -260,7 +301,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     method: 'GET',
     summary: 'List samples',
     description:
-      '857,976 samples. /samples and /genome-collections in the UI are this one endpoint split by source type: metagenome assemblies versus MAG, SAG and isolate genomes.',
+      '{samples} samples. /samples and /genome-collections in the UI are this one endpoint split by source type: metagenome assemblies versus MAG, SAG and isolate genomes.',
     params: [
       ...LIST_PARAMS,
       { name: 'includeTaxonomy', in: 'query', type: 'boolean', description: 'Include the genome taxonomy block.' },
@@ -281,7 +322,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     path: '/api/studies',
     method: 'GET',
     summary: 'List studies',
-    description: '44,295 studies, ranked by the families found only in that study.',
+    description: '{studies} studies, ranked by the families found only in that study.',
     params: [
       ...LIST_PARAMS,
       { name: 'search', in: 'query', type: 'string', description: 'Free text over study title and name.' },
@@ -348,7 +389,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
       'The vocabulary behind the query builder: every field a property-search condition may name. Read it before constructing a query rather than guessing field ids.',
     bareResponse: true,
     returns:
-      '{ fields: [{ id, label, type, plottable, operators: { acceptedByApi, offeredByBuilder }, options? }] } — 85 fields. `id` is what a condition\'s `field` takes. The two operator lists are deliberately different and a programmatic client wants the first: `acceptedByApi` is every operator the server will build a clause for on that field, and the same set it quotes back when it refuses — a condition using anything else is rejected with 400, not run. `offeredByBuilder` is the narrower list the web query builder puts in its dropdown, kept short for the people using it. They differ on all 85: `product` accepts contains/not_contains/starts_with/ends_with and offers only the set operators, `is_complete` accepts not_equals and offers only equals. Read only the builder list and those queries stay undiscoverable. Neither list follows from `type`: `is_complete` is `type: select` but boolean underneath, so `in` is not accepted at all. `options` carries the fixed value list for the 7 fields that have one (category, candidate kind, sample type, the two boolean fields, and the curated data source and tailoring enzyme class, whose values appear in no other endpoint — tailoring class is virtual and queries pfam). `plottable` marks the fields a distribution can be drawn for; `facetFields` on a property search is narrower — it wants the select-typed ids. Its own shape, not the { success, data } envelope.',
+      `{ fields: [{ id, label, type, plottable, operators: { acceptedByApi, offeredByBuilder }, options? }] } — ${bgcPropertyFilterFields.length} fields. \`id\` is what a condition's \`field\` takes. The two operator lists are deliberately different and a programmatic client wants the first: \`acceptedByApi\` is every operator the server will build a clause for on that field, and the same set it quotes back when it refuses — a condition using anything else is rejected with 400, not run. \`offeredByBuilder\` is the narrower list the web query builder puts in its dropdown, kept short for the people using it. They differ on all ${bgcPropertyFilterFields.length}: \`product\` accepts contains/not_contains/starts_with/ends_with and offers only the set operators, \`is_complete\` accepts not_equals and offers only equals. Read only the builder list and those queries stay undiscoverable. Neither list follows from \`type\`: \`is_complete\` is \`type: select\` but boolean underneath, so \`in\` is not accepted at all. \`options\` carries the fixed value list for the 7 fields that have one (category, candidate kind, sample type, the two boolean fields, and the curated data source and tailoring enzyme class, whose values appear in no other endpoint — tailoring class is virtual and queries pfam). \`plottable\` marks the fields a distribution can be drawn for; \`facetFields\` on a property search is narrower — it wants the select-typed ids. Its own shape, not the { success, data } envelope.`,
     example: '/api/search/properties/fields',
   },
   {
@@ -375,7 +416,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     path: '/api/data-sources',
     method: 'GET',
     summary: 'List data sources',
-    returns: 'The 17 repositories and published datasets the Atlas draws on, with source type and URL.',
+    returns: 'The {dataSources} repositories and published datasets the Atlas draws on, with source type and URL.',
   },
   {
     path: '/api/statistics',

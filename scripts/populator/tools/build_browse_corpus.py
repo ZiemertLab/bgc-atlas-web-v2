@@ -134,6 +134,27 @@ BROWSE_INDEX_CONFIGS: dict[str, BrowseIndexConfig] = {
                    -- From SQL rather than derived here, so the browse index and
                    -- the SQL fallback answer the advanced filter identically.
                    gd.dom_ecosystem_l1, gd.dom_ecosystem_l3,
+                   -- Share filters, selected here so a full rebuild keeps them (a
+                   -- corpus rebuild drops any field that exists only as a patch).
+                   -- The arrays are never NULL in the view; resolved_pct_l* and
+                   -- dom_ecosystem_l* are NULL only for a family with no primary members.
+                   gd.dom_ecosystem_l2, gd.dom_ecosystem_l4, gd.dom_ecosystem_l5,
+                   gd.resolved_pct_l1, gd.resolved_pct_l2, gd.resolved_pct_l3,
+                   gd.resolved_pct_l4, gd.resolved_pct_l5,
+                   gd.product_types_ge10, gd.product_types_ge50, gd.product_types_ge90,
+                   gd.eco_l1_ge10, gd.eco_l1_ge50, gd.eco_l1_ge90,
+                   gd.eco_l2_ge10, gd.eco_l2_ge50, gd.eco_l2_ge90,
+                   gd.eco_l3_ge10, gd.eco_l3_ge50, gd.eco_l3_ge90,
+                   gd.eco_l4_ge10, gd.eco_l4_ge50, gd.eco_l4_ge90,
+                   gd.eco_l5_ge10, gd.eco_l5_ge50, gd.eco_l5_ge90,
+                   -- "any member" per level: the keys of the distribution the SQL
+                   -- fallback tests with jsonb_exists_any (as gcf_share_fields_any_map.sql).
+                   ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l1, '{}'::jsonb)) k ORDER BY k) AS eco_l1_any,
+                   ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l2, '{}'::jsonb)) k ORDER BY k) AS eco_l2_any,
+                   ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l3, '{}'::jsonb)) k ORDER BY k) AS eco_l3_any,
+                   ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l4, '{}'::jsonb)) k ORDER BY k) AS eco_l4_any,
+                   ARRAY(SELECT k FROM jsonb_object_keys(COALESCE(gd.biome_distribution_l5, '{}'::jsonb)) k ORDER BY k) AS eco_l5_any,
+                   COALESCE(gd.product_type_member_share, '{}'::jsonb) AS product_type_member_share,
                    -- Member shares per category (overlapping) and categories at
                    -- >= 50%, from SQL so the fallback agrees. NULL (absent) when no
                    -- member carries it. Names: browse_index_mapping.PRODUCT_CATEGORIES.
@@ -393,6 +414,43 @@ def narrow_to_runs(config: BrowseIndexConfig, path: str) -> BrowseIndexConfig:
         RUN_ANCHOR, f"\n            WHERE b.antismash_run_id = ANY({literal})" + RUN_ANCHOR))
 
 
+# The gcfs corpus LEFT JOINs study_gcf and gcf_study_count and COALESCEs a miss to
+# no studies. After a re-clustering those tables must be rebuilt for the new family
+# ids FIRST: the R2.0-beta.6 corpus was built before they were, every join missed,
+# and every document said "in no study" -- so /studies/<id> listed no families for
+# two days with nothing failing. 93% of listed families have a study; a share far
+# below that means the tables still hold the previous clustering's ids.
+MIN_STUDY_COVERAGE = 0.5
+
+
+def study_coverage_problem(listed: int, with_study: int) -> str | None:
+    """Why the study tables can't be trusted for this corpus, or None."""
+    if listed == 0:
+        return "gcfs has no listed families"
+    share = with_study / listed
+    if share < MIN_STUDY_COVERAGE:
+        return (
+            f"only {with_study:,} of {listed:,} listed families ({share:.1%}) have a "
+            f"gcf_study_count row; expected about 93%. study_gcf and gcf_study_count "
+            f"probably still hold the previous clustering's family ids: rebuild them "
+            f"(scripts/populator/tools/study_bgc_summary) before the gcfs corpus."
+        )
+    return None
+
+
+def check_study_tables(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COUNT(*), COUNT(c.gcf_id)
+            FROM gcfs g LEFT JOIN gcf_study_count c ON c.gcf_id = g.id
+            WHERE g.listed
+        """)
+        listed, with_study = cur.fetchone()
+    problem = study_coverage_problem(listed, with_study)
+    if problem:
+        raise SystemExit(f"refusing to build the gcfs corpus: {problem}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", required=True, choices=sorted(BROWSE_INDEX_CONFIGS))
@@ -407,6 +465,9 @@ def main() -> None:
             parser.error("--antismash-runs applies to --entity bgcs only")
         config = narrow_to_runs(config, args.antismash_runs)
     count = 0
+    if args.entity == "gcfs":
+        with psycopg2.connect(**database_connection_args()) as conn:
+            check_study_tables(conn)
     with psycopg2.connect(**database_connection_args()) as conn, open_output(args.out) as out:
         for document in iter_documents(conn, args.entity, config, args.fetch_size):
             out.write(json.dumps(document, separators=(",", ":"), default=str))

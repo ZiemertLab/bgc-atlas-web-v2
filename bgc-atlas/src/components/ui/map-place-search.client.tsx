@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
+import { textElement } from "@/lib/utils/text-element";
 
 // Photon (OSM geocoder) is queried from the browser: debounced, 5 results, and each keystroke
 // aborts the previous request, to stay within the public instance's fair use.
@@ -242,7 +243,9 @@ export function MapPlaceSearch() {
         interactive: false,
       }).addTo(map);
       const tip = contextLabel(p, label);
-      marker.bindTooltip(tip ? `${label} · ${tip}` : label, {
+      // An element, not the string: Leaflet assigns a string tooltip to innerHTML, and
+      // these names come from OpenStreetMap via Photon.
+      marker.bindTooltip(textElement(tip ? `${label} · ${tip}` : label), {
         direction: "top",
       });
       markerRef.current = marker;

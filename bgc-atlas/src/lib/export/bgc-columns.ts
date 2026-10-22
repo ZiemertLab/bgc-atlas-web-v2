@@ -9,7 +9,7 @@ import { getTaxonDisplayName } from '@/lib/utils/taxonomy-utils';
 
 export type ExportableBgc = Pick<BgcListItem,
   | 'id' | 'assembly' | 'assemblyDisplay' | 'sampleIds' | 'sampleLabels' | 'dataSourceNames'
-  | 'category' | 'products' | 'completeness' | 'biomeLevels' | 'biomeEnvironment'
+  | 'category' | 'categories' | 'products' | 'completeness' | 'biomeLevels' | 'biomeEnvironment'
   | 'goldEcosystemPath' | 'taxonomyDomain' | 'taxonomyPhylum' | 'taxonomyClass'
   | 'taxonomyOrder' | 'taxonomyFamily' | 'taxonomyGenus' | 'taxonomySpecies'
   | 'length' | 'genes' | 'gcf' | 'gcfName' | 'distance' | 'knownCluster'>;
@@ -58,8 +58,12 @@ export const getExportValue = (
       const arr = labels.length > 0 ? labels : ids;
       return arr.join(', ');
     }
-    case 'class':
-      return bgc.category || '';
+    case 'class': {
+      // The cell shows a hybrid region's categories, one badge each; 'Hybrid' alone
+      // told a reader of the file nothing about 338,588 BGCs.
+      const categories = Array.isArray(bgc.categories) ? bgc.categories.filter(Boolean) : [];
+      return categories.length > 1 ? categories.join(', ') : bgc.category || categories[0] || '';
+    }
     case 'type': {
       const types: string[] = Array.isArray(bgc.products) ? bgc.products : [];
       return types.join(', ');

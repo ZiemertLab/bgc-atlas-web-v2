@@ -15,6 +15,8 @@ interface FacetValueComboboxProps {
   value: string[];
   onChange: (values: string[]) => void;
   invalid?: boolean;
+  /** Show each value's document count (default). */
+  showCounts?: boolean;
 }
 
 interface FacetBucket { value: string; count: number; label?: string; }
@@ -26,7 +28,7 @@ const LOAD_STEP = 1000;
 const MAX_VALUES = 5000;       // server-capped; beyond this, type to narrow
 
 // Backed by the precomputed vocabulary endpoint (/api/search/properties/facet-values).
-export function FacetValueCombobox({ field, multiple, value, onChange, invalid }: FacetValueComboboxProps) {
+export function FacetValueCombobox({ field, multiple, value, onChange, invalid, showCounts = true }: FacetValueComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(INITIAL_VALUES);
@@ -129,9 +131,11 @@ export function FacetValueCombobox({ field, multiple, value, onChange, invalid }
                       <span className="ml-1.5 text-muted-foreground">{it.label}</span>
                     )}
                   </span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">
-                    {it.count.toLocaleString()}
-                  </span>
+                  {showCounts && (
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {it.count.toLocaleString()}
+                    </span>
+                  )}
                 </button>
               );
             })}

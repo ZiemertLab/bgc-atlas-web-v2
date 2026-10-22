@@ -71,6 +71,26 @@ describe('GCF export rows', () => {
     expect(row.product_category_distribution).toBe('NRPS 60%; PKS 40%');
   });
 
+  it('exports product member shares and the L1 resolved share beside the biome', () => {
+    const row = toGcfExportRow({
+      id: 'a', bgcCount: 1,
+      source: {
+        product_type_member_share: { 'RiPP-like': 99.96, hserlactone: 0.03 },
+        resolved_pct_l1: 99.5,
+        biome_distribution_l1: { Environmental: 100 },
+      },
+    });
+    expect(row.product_type_member_share).toBe('RiPP-like 99.96%; hserlactone 0.03%');
+    expect(row.ecosystem_resolved_l1).toBe(99.5);
+    const labels = GCF_EXPORT_COLUMNS.map((c) => c.label);
+    expect(labels).toContain('Ecosystem (L1, % of members with an L1 ecosystem)');
+    expect(labels).toContain('Members with an L1 ecosystem (%)');
+    // No shares indexed: blanks, not zeros.
+    const bare = toGcfExportRow({ id: 'a', bgcCount: 1, source: {} });
+    expect(bare.product_type_member_share).toBe('');
+    expect(bare.ecosystem_resolved_l1).toBe('');
+  });
+
   it('exports an absent distribution as empty, not as 0%', () => {
     const row = toGcfExportRow({ id: 'a', bgcCount: 1, source: {} });
     expect(row.top_genus).toBe('');

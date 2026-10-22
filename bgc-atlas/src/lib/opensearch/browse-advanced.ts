@@ -16,7 +16,13 @@ import type {
 } from '@/lib/filters/types';
 import { hasFilterRules, isBlankFilterValue } from '@/lib/filters/types';
 import { UnhonourableQueryError } from '@/lib/filters/unhonourable-query';
+import {
+  ECO_SHARE_LEVELS, PRODUCT_SHARE_FIELD, SHARE_OPERATORS, ecoShareFieldId,
+  conditionThreshold, resolveShareCondition, shareOsClause, shareSpecForField,
+  shareThresholdRefusal,
+} from '@/lib/filters/share-fields';
 import type { OSQuery } from './query';
+import { ecoAnyIndexed } from './gcf-browse-fields';
 import { buildOpenSearchQuery, honourableOperators, makeResolver } from './query';
 // Type-only import, so browse-query.ts can import this module without a cycle.
 import type { BrowseEntity } from './browse-query';
@@ -38,6 +44,9 @@ type BrowseField = FilterFieldDefinition & {
   elementwiseNegation?: boolean;
   /** Leave the `exists` guard off a negated clause (sourceType only; see there). */
   negationSkipsExists?: boolean;
+  /** A share field: built by lib/filters/share-fields.ts, which the SQL
+   *  fallback calls too, rather than by ./query. */
+  shareField?: boolean;
 };
 
 /** Positive operators: each field's SQL form and the index build the same comparison. */
@@ -155,8 +164,13 @@ const GCF_FIELDS: BrowseField[] = [
   kw('productType', 'Category', 'product_categories'),
   // Union of gcf_environmental_distribution_mv biome levels 1-3.
   kw('biome', 'Biome', 'biome_terms'),
-  // Union of the primary members' bgcs.product elements.
-  kw('productClass', 'Product', 'product_terms'),
+  // Share of members per product type / per ecosystem level, against precomputed threshold
+  // arrays the SQL fallback also reads (see share-fields.ts).
+  { id: PRODUCT_SHARE_FIELD, label: 'Product', type: 'select', os: 'keyword', shareField: true },
+  ...ECO_SHARE_LEVELS.map((level): BrowseField => ({
+    id: ecoShareFieldId(level), label: `Ecosystem share (L${level})`, type: 'select', os: 'keyword',
+    shareField: true,
+  })),
   // Union of the primary members' seven taxonomy ranks.
   kw('taxonomy', 'Taxonomy', 'taxonomy_terms'),
   num('memberBgcCount', 'Member BGCs', 'member_bgc_count'),
@@ -225,6 +239,8 @@ const negationTarget = (def: BrowseField): string | null => {
  * aggregation routes answer 502.
  */
 export const servableBrowseOperators = (def: BrowseField): FilterOperator[] => {
+  // Negatives included: share-fields.ts builds them with their own guard.
+  if (def.shareField) return SHARE_OPERATORS;
   const kindOperators = honourableOperators(def);
   const candidates = negationTarget(def)
     ? [...POSITIVE_OPERATORS, ...NEGATIVE_OPERATORS]
@@ -248,12 +264,20 @@ export function supportsAdvancedBrowse(entity: BrowseEntity, group: FilterGroup 
       if (isBlankFilterValue(condition.value)) return true;
       const def = byId.get(condition.field);
       if (!def) return false;
+      // Ecosystem "any member" needs eco_l<n>_any on the index; without it the
+      // SQL fallback answers (gcf-browse-fields.ts), never an empty terms query.
+      if (def.shareField && readsEcoAny(condition) && !ecoAnyIndexed()) return false;
       return servableBrowseOperators(def).includes(condition.operator);
     })
     && (node.groups ?? []).every(servable);
 
   return servable(group);
 }
+
+/** An Ecosystem share condition at "any member", which reads eco_l<n>_any. */
+const readsEcoAny = (condition: FilterCondition): boolean =>
+  shareSpecForField(condition.field)?.kind === 'ecosystem'
+  && Number(conditionThreshold(condition)) === 0;
 
 const firstValue = (value: FilterValue): string => {
   const entry = Array.isArray(value) ? value[0] : value;
@@ -327,6 +351,34 @@ export function buildAdvancedBrowseFilter(
         reason: 'unsupported_operator', value: condition.value, supportedOperators,
       });
       return null;
+    }
+
+    if (def.shareField) {
+      const refusal = shareThresholdRefusal(condition);
+      if (refusal) {
+        unhonoured.push(refusal);
+        return null;
+      }
+      // Behind the gate this only happens where the request cannot fall back to
+      // SQL -- ?study=, which the gate force-supports. Fail closed, and say why,
+      // rather than query a field the index lacks: that matches nothing at 200.
+      if (readsEcoAny(condition) && !ecoAnyIndexed()) {
+        unhonoured.push({
+          field: condition.field, operator: condition.operator,
+          reason: 'not_indexed', value: condition.value, threshold: 0,
+        });
+        return null;
+      }
+      const share = resolveShareCondition(condition);
+      if (!share) {
+        unhonoured.push({
+          field: condition.field, operator: condition.operator,
+          reason: 'unusable_value', value: condition.value, supportedOperators,
+        });
+        return null;
+      }
+      produced += 1;
+      return shareOsClause(share);
     }
 
     const plan = planCondition(def, condition);

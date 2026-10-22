@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { entityDataset, SITE_DATASET_ID } from './structured-data';
 
-// Google treats every object with an @type as an item; Dataset items need a description.
-function datasetNodesMissingDescription(o: unknown, path = '$'): string[] {
+// Google treats every object with an @type as an item and checks each Dataset item for `field`
+// on its own: description is required, creator recommended.
+function datasetNodesMissing(field: string, o: unknown, path = '$'): string[] {
   const bad: string[] = [];
-  if (Array.isArray(o)) o.forEach((v, i) => bad.push(...datasetNodesMissingDescription(v, `${path}[${i}]`)));
+  if (Array.isArray(o)) o.forEach((v, i) => bad.push(...datasetNodesMissing(field, v, `${path}[${i}]`)));
   else if (o && typeof o === 'object') {
     const r = o as Record<string, unknown>;
-    if (r['@type'] === 'Dataset' && !r.description) bad.push(path);
-    for (const [k, v] of Object.entries(r)) bad.push(...datasetNodesMissingDescription(v, `${path}.${k}`));
+    if (r['@type'] === 'Dataset' && !r[field]) bad.push(path);
+    for (const [k, v] of Object.entries(r)) bad.push(...datasetNodesMissing(field, v, `${path}.${k}`));
   }
   return bad;
 }
@@ -23,7 +24,11 @@ describe('entityDataset', () => {
   });
 
   it('has no Dataset node without a description', () => {
-    expect(datasetNodesMissingDescription(node)).toEqual([]);
+    expect(datasetNodesMissing('description', node)).toEqual([]);
+  });
+
+  it('has no Dataset node without a creator', () => {
+    expect(datasetNodesMissing('creator', node)).toEqual([]);
   });
 
   it('ties isPartOf to the site-wide Dataset by @id', () => {

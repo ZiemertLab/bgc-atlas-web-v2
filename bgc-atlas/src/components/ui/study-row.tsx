@@ -6,13 +6,14 @@ import { memo } from 'react';
 import { getGOLDColorHex } from '@/lib/utils/gold-parser';
 import { getProductCategoryColor } from '@/lib/utils/chart-utils';
 import type { Study } from '@/lib/types';
+import { studyTitle } from '@/lib/utils/accession';
 
 // Narrow-screen counterpart of the /studies ResizableTable. Categories are drawn on share of
 // assignments: product_category is multi-label.
 const num = (n: number | null | undefined) => (n ?? 0).toLocaleString();
 
 function StudyRowComponent({ study }: { study: Study }) {
-  const title = study.title || study.study_name || study.study_key;
+  const title = studyTitle(study);
   const coverage = study.gcf_coverage == null ? null : Math.round(study.gcf_coverage * 100);
 
   const categories = Object.entries(study.product_category_dist ?? {})

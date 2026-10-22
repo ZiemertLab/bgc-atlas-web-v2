@@ -135,6 +135,54 @@ describe('parseGenbank', () => {
   });
 });
 
+describe('parseGenbank on hostile or unusual line endings', () => {
+  it('reads a record with old-Mac \\r line endings', () => {
+    const record = parseGenbank(GBK.replace(/\n/g, '\r'))!;
+    expect(record.locus).toBe('contig_1002');
+    expect(record.cdsFeatures.map((c) => c.locusTag)).toEqual(parseGenbank(GBK)!.cdsFeatures.map((c) => c.locusTag));
+  });
+
+  it('parses an adversarial feature or qualifier line in linear time', () => {
+    // A \r or \u2028 that `.` cannot match made `$` unreachable, and the patterns
+    // backtracked quadratically: 40,000 characters took 1.5 s.
+    const head = 'LOCUS       x 10 bp    DNA\nFEATURES             Location/Qualifiers\n';
+    const started = performance.now();
+    parseGenbank(`${head}     X${' '.repeat(1_000_000)}a\u2028\n//`);
+    parseGenbank(`${head}     CDS             1..9\n${' '.repeat(21)}/${'a'.repeat(1_000_000)}\u2028\n//`);
+    parseGenbank(`${head}     X${' '.repeat(1_000_000)}a\r`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe('parseGenbank CDS names', () => {
+  const cds = (qualifier: string, at: number) => [
+    `     CDS             ${at}..${at + 29}`,
+    `                     ${qualifier}`,
+    '                     /translation="MTEHTPSSLIVTFFGAYGRAEL"',
+  ];
+  const record = [
+    'LOCUS       r1                     300 bp    DNA              UNK 01-JAN-1980',
+    'FEATURES             Location/Qualifiers',
+    ...cds('/gene="orf"', 1),
+    ...cds('/gene="orf"', 40),
+    ...cds('/locus_tag="orf_2"', 80),
+    ...cds('/gene="orf"', 120),
+    'ORIGIN',
+    '//',
+  ].join('\n');
+
+  it('gives every CDS its own query name, keeping a real tag and suffixing repeats', () => {
+    const tags = parseGenbank(record)!.cdsFeatures.map((c) => c.locusTag);
+    expect(tags).toEqual(['orf', 'orf_2', 'orf_2_2', 'orf_3']);
+    expect(new Set(tags).size).toBe(tags.length);
+  });
+
+  it('names them the same way every time the record is read', () => {
+    expect(parseGenbank(record)!.cdsFeatures.map((c) => c.locusTag))
+      .toEqual(parseGenbank(record)!.cdsFeatures.map((c) => c.locusTag));
+  });
+});
+
 describe('cdsFasta / originFasta', () => {
   const record = parseGenbank(GBK)!;
 

@@ -6,6 +6,7 @@ import {
   buildStudyOrder,
   buildStudyWhere,
   countStudies,
+  countUnlistedStudies,
   fetchStudyRows,
   parseIntParam,
 } from '@/lib/api/studies-query';
@@ -34,22 +35,29 @@ export async function GET(request: Request) {
 
   // Bump the version on any change to the row set or payload shape; the key
   // carries params verbatim, so removed params need a bump too.
-  const { dataKey, countKey } = buildListCacheKeys('studies:list:v8', params, [
+  const { dataKey, countKey } = buildListCacheKeys('studies:list:v10', params, [
     'limit', 'offset', 'sortField', 'sortOrder',
   ]);
 
-  const fetchTotal = () => countStudies(whereClause);
+  // `unlisted` rides in the count entry: both answer "how many", on the same TTL.
+  const fetchTotal = async () => {
+    const [total, unlisted] = await Promise.all([
+      countStudies(whereClause),
+      countUnlistedStudies(params),
+    ]);
+    return { total, unlisted };
+  };
   const fetchData = () => fetchStudyRows(whereClause, orderClause, limit, offset);
 
   try {
-    const [total, data] = await Promise.all([
+    const [{ total, unlisted }, data] = await Promise.all([
       getOrSetCache(countKey, fetchTotal, 600),
       getOrSetCache(dataKey, fetchData, 300),
     ]);
 
     return NextResponse.json({
       success: true,
-      data: { data, total, limit, offset },
+      data: { data, total, unlisted, limit, offset },
     });
   } catch (error) {
     return serverError(error, 'Failed to load studies');

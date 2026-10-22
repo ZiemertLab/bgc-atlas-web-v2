@@ -7,7 +7,9 @@ import { parseAdvancedFilterParam } from '@/lib/filters/types';
 import { buildAdvancedWhere } from '@/lib/filters/prisma-builders';
 import { sampleFilterFields } from '@/lib/filters/field-definitions';
 import { filterRefusalResponse, goldBucketRefusal, sourceTypeRefusal } from '@/lib/api/filter-refusal';
-import { isBrowseSearchEnabled, searchBrowseIndex } from '@/lib/opensearch/browse-client';
+import {
+  browseQueryRejectionResponse, isBrowseQueryRejection, isBrowseSearchEnabled, searchBrowseIndex,
+} from '@/lib/opensearch/browse-client';
 import { hydrateSampleEnrichments } from '@/lib/api/sample-enrichments';
 import { deepPageRefusal } from '@/lib/api/deep-page-refusal';
 import { supportsBrowseSearch } from '@/lib/opensearch/browse-query';
@@ -172,6 +174,8 @@ export async function GET(request: Request) {
       // full-corpus scan). Returned, not thrown: this handler has no outer catch.
       const refusal = filterRefusalResponse(error);
       if (refusal) return refusal;
+      // So is a value the index cannot use, or a page past its window.
+      if (isBrowseQueryRejection(error)) return browseQueryRejectionResponse(error, 'Samples browse');
       console.error('OpenSearch samples browse query failed; falling back to PostgreSQL', error);
     }
   }

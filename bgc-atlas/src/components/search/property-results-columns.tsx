@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { KnownClusterCell } from '@/components/ui/known-cluster-cell';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { TaxonomyBadge } from '@/components/ui/taxonomy-badge';
 import type { TableColumn } from '@/components/ui/resizable-table';
 import { getProductCategoryBadgeStyle, getTaxonomyBadgeStyle } from '@/lib/utils/chart-utils';
 import { formatGOLDBreadcrumb, getGOLDBadgeClass } from '@/lib/utils/gold-parser';
@@ -157,17 +157,8 @@ export function propertyResultColumns({ taxRank, setTaxRank }: {
         const style = getTaxonomyBadgeStyle(taxRank, String(h.tax_phylum ?? ''), String(h.tax_domain ?? ''));
         const lineage = taxLineage(h);
         return (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant={style ? 'secondary' : 'outline'} style={style}
-                className={cn('h-auto max-w-full whitespace-normal text-[11px]', tax.italic && 'italic')}>
-                {tax.name}
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[440px]">
-              <p className="text-xs leading-relaxed">{lineage.join(' › ') || tax.name}</p>
-            </TooltipContent>
-          </Tooltip>
+          <TaxonomyBadge name={tax.name} lineage={lineage.join(' › ')} style={style}
+            italic={tax.italic} className="text-[11px]" />
         );
       },
     },

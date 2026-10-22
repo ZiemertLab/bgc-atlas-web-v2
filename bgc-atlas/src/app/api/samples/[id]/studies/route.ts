@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 
 import prisma from '@/lib/prisma';
+import { canShowAbstract } from '@/lib/abstract-license';
 import { getOrSetCache } from '@/lib/cache';
 import { stripSourcePrefix } from '@/lib/utils/sample-id';
 import { serverError } from '@/lib/api/errors';
@@ -77,6 +78,19 @@ async function loadSampleStudies(sampleId: string) {
     new Set(studies.filter((s) => studyGroupKey(s) !== s.id).map((s) => s.study_name as string))
   );
   const unnamedIds = studies.filter((s) => studyGroupKey(s) === s.id).map((s) => s.id);
+
+  // The abstract's provenance columns are not on the Prisma model, so the licence gate reads
+  // them here. A handful of rows: the studies of one sample.
+  const provenance = await prisma.$queryRaw<
+    { id: string; abstract_source: string | null; abstract_license: string | null }[]
+  >(Prisma.sql`
+    SELECT id::text AS id, abstract_source, abstract_license
+    FROM studies
+    WHERE id = ANY(${studies.map((s) => s.id)}::uuid[])
+  `);
+  const showableAbstract = new Set(
+    provenance.filter((p) => canShowAbstract(p.abstract_source, p.abstract_license)).map((p) => p.id)
+  );
 
   const groups = await prisma.$queryRaw<GroupRow[]>(Prisma.sql`
     WITH rel AS MATERIALIZED (
@@ -156,7 +170,9 @@ async function loadSampleStudies(sampleId: string) {
       id: study.id,
       external_id: study.external_id ?? undefined,
       title: study.title ?? undefined,
-      abstract: study.abstract ?? undefined,
+      // Licence-gated, as on /api/studies/{id}: the text may only leave where canShowAbstract allows.
+      abstract:
+        study.abstract && showableAbstract.has(study.id) ? study.abstract : undefined,
       study_type: study.study_type ?? undefined,
       study_name: study.study_name ?? undefined,
       center_name: study.center_name ?? undefined,
@@ -212,7 +228,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id?: s
     }
 
     const formatted = await getOrSetCache(
-      `samples:studies:v2:${sampleId}`,
+      // v3: abstracts are licence-gated; a v2 entry may still carry one.
+      `samples:studies:v3:${sampleId}`,
       () => loadSampleStudies(sampleId),
       300,
     );
